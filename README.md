@@ -66,14 +66,34 @@ mkdir -p .agentrx-local/settings
 cp .agentrx/claude/settings.json .agentrx-local/settings/claude.local.json
 ```
 
-### 4. Start Using AgentRX
+### 4. Validate Integration
+
+```bash
+# Test basic functionality
+/prompt-file .agentrx/agents/prompts/test_prompt_1.md
+# Should execute successfully
+
+# Verify submodule status
+git submodule status
+# Should show clean .agentrx submodule
+
+# Check command availability
+ls .agentrx/.claude/commands/
+# Should show available commands
+```
+
+### 5. Start Using AgentRX
 
 ```bash
 # Execute an AgentRX prompt
-/prompt-file .agentrx/agents/prompts/agentrx_dev/git_integration_1.md
+/prompt-file .agentrx/agents/prompts/agentrx_dev/git_integration_01.md
 
 # Execute with variables
 /prompt-file .agentrx/agents/prompts/test_prompt_1.md '{"project_name": "my-app"}'
+
+# Create project-specific prompts
+echo "Deploy to {{environment}}" > .agentrx-local/prompts/deploy.md
+/prompt-file .agentrx-local/prompts/deploy.md '{"environment": "staging"}'
 ```
 
 ## Installation Methods
@@ -212,6 +232,75 @@ All AgentRX commands are available via `.agentrx/claude/commands/`
 - [Standard commands](.agentrx/claude/commands/)
 - [Development prompts](.agentrx/agents/prompts/agentrx_dev/)
 - [Project-specific prompts](.agentrx-local/prompts/)
+```
+
+## Integration Validation
+
+After setting up AgentRX in your host project, verify the integration is working correctly:
+
+### Health Check Commands
+```bash
+# Verify AgentRX submodule is properly initialized
+git submodule status
+# Should show: [commit-hash] .agentrx (tag or branch info)
+
+# Check command availability
+ls .agentrx/.claude/commands/
+# Should show: prompt-file.md
+
+# Test basic prompt execution
+/prompt-file .agentrx/agents/prompts/test_prompt_1.md
+# Should execute without errors
+
+# Verify local customization structure (if created)
+ls .agentrx-local/
+# Should show: prompts/ settings/ (if you created them)
+```
+
+### Integration Status
+```bash
+# Check that .agentrx-local is properly gitignored
+git status
+# Should NOT show .agentrx-local/ files as untracked
+
+# Verify submodule tracking
+cat .gitmodules
+# Should show .agentrx submodule configuration
+```
+
+## Troubleshooting
+
+### Common Integration Issues
+
+**Submodule not initialized**
+```bash
+# Symptom: .agentrx directory empty or missing
+# Solution:
+git submodule update --init --recursive
+```
+
+**Command not found: /prompt-file**
+```bash
+# Symptom: Command not recognized
+# Check: Verify command file exists
+ls .agentrx/.claude/commands/prompt-file.md
+# If missing, submodule may not be properly initialized
+```
+
+**Local changes in AgentRX submodule**
+```bash
+# Symptom: git status shows modified .agentrx
+# Solution: Reset submodule to clean state
+cd .agentrx && git checkout . && cd ..
+```
+
+**Project-specific files appearing in AgentRX**
+```bash
+# Symptom: Custom prompts mixed with standard AgentRX files
+# Solution: Move to .agentrx-local/ and ensure .gitignore excludes it
+mkdir -p .agentrx-local/prompts
+mv .agentrx/my-custom-prompt.md .agentrx-local/prompts/
+echo ".agentrx-local/" >> .gitignore
 ```
 
 ## Development
