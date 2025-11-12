@@ -1,3 +1,4 @@
+this is a claude code slash-command
 # Prompt File Reader
 
 Read and execute the markdown file specified as an argument as a prompt. This command allows you to reuse a prompt,
