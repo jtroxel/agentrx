@@ -39,7 +39,7 @@ agentrx/
 
 ```bash
 # In your host project root directory
-git submodule add https://github.com/yourusername/agentrx .agentrx
+git submodule add https://github.com/jtroxel/agentrx .agentrx
 git submodule update --init --recursive
 
 # Commit the submodule addition
@@ -103,7 +103,8 @@ Best for production projects where you want version control over AgentRX updates
 
 ```bash
 cd your-project-root
-git submodule add https://github.com/yourusername/agentrx .agentrx
+git submodule add https://github.com/jtroxel/agentrx .agentrx
+
 git submodule update --init --recursive
 ```
 
@@ -118,7 +119,7 @@ For local development and testing:
 
 ```bash
 # Clone AgentRX separately
-git clone https://github.com/yourusername/agentrx
+git clone https://github.com/jtroxel/agentrx
 
 # Create symbolic link in your project
 ln -s /path/to/agentrx /path/to/your/project/.agentrx
@@ -128,7 +129,7 @@ ln -s /path/to/agentrx /path/to/your/project/.agentrx
 For standalone use or experimentation:
 
 ```bash
-git clone https://github.com/yourusername/agentrx
+git clone https://github.com/jtroxel/agentrx
 cd agentrx
 ```
 
@@ -310,11 +311,14 @@ echo ".agentrx-local/" >> .gitignore
 - Git
 
 ### Setup
+Pull the agentrx project into your Host project
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/agentrx
-cd agentrx
+git clone https://github.com/jtroxel/agentrx .agentrx
+cd .agentrx
+```
 
+```bash
 # Install in development mode (optional, if you plan to extend functionality)
 pip install -e .
 ```
