@@ -100,6 +100,8 @@ echo "Deploy to {{environment}}" > .agentrx-local/prompts/deploy.md
 
 ### Git Submodule (Production - Recommended)
 Best for production projects where you want version control over AgentRX updates:
+- Clean separation between host project and AgentRX files
+- Version control over AgentRX updates
 
 ```bash
 cd your-project-root
@@ -108,34 +110,18 @@ git submodule add https://github.com/jtroxel/agentrx .agentrx
 git submodule update --init --recursive
 ```
 
-**Benefits:**
-- Clean separation between host project and AgentRX files
-- Version control over AgentRX updates
-- Team members get consistent AgentRX version
-- No modification of AgentRX source files
-
-### Symbolic Link (Development)
-For local development and testing:
-
-```bash
-# Clone AgentRX separately
-git clone https://github.com/jtroxel/agentrx
-
-# Create symbolic link in your project
-ln -s /path/to/agentrx /path/to/your/project/.agentrx
-```
-
 ### Direct Clone (Standalone)
 For standalone use or experimentation:
 
 ```bash
-git clone https://github.com/jtroxel/agentrx
-cd agentrx
+git clone https://github.com/jtroxel/agentrx .agentx
+echo -e "\n# AgentRX local configurations\n.agentrx-local/\n*.local.*" >> .gitignore
+cd .agentrx
 ```
 
-## Usage
+## agentrx Usage
 
-### Prompt File Execution
+### `prompt-file`: Prompt File Execution
 Use the prompt file command to execute markdown files as prompts:
 
 ```bash
