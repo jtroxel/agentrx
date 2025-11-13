@@ -34,14 +34,22 @@ agentrx/
 - **Settings Management**: Local configuration for Claude-specific settings
 
 ## Quick Start
-
+### 0. Env Variables
+Export these in your terminal before running AgentRX commands, or set in your IDE Terminal settings.
+```bash
+export AGENTX_HOME=/Users/jtroxel/dev/agentx
+export MY_PROJECT=/Users/jtroxel/dev/agentx_md
+```
 ### 1. Add AgentRX to Your Project (Recommended: Git Submodule)
 
 ```bash
+cd $MY_PROJECT
 # In your host project root directory
 git submodule add https://github.com/jtroxel/agentrx .agentrx
 git submodule update --init --recursive
-
+```
+```bash
+cd $MY_PROJECT
 # Commit the submodule addition
 git add .gitmodules .agentrx
 git commit -m "Add AgentRX as submodule"
