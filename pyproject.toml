@@ -1,0 +1,30 @@
+[project]
+name = "agentrx"
+version = "0.1.0"
+description = "CLI tool to generate Markdown files from templates with configurable AI agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [ { name = "Your Name", email = "you@example.com" } ]
+
+dependencies = [
+    "typer[all]>=0.9",
+    "pydantic>=1.10",
+    "langchain>=0.0.0", # placeholder; pin to appropriate version when installing
+    "jinja2>=3.0",
+]
+
+[project.optional-dependencies]
+ai = ["openai"]
+dev = ["pytest", "pytest-cov", "black", "isort", "pytest-mock"]
+
+[project.scripts]
+agentrx = "agentrx.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agentrx*"]
+exclude = ["dev*", "tests*"]
