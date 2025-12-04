@@ -68,3 +68,14 @@ tmp/
 .agentrx-local/
 local/
 /agentrx.iml
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+dist/
+build/
+.mypy_cache/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
