@@ -1,25 +1,19 @@
-# CLAUDE.md
+# Claude Code Guidance
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-For general agent guidance and project overview, see [AGENTS.md](AGENTS.md).
+## 1. IMPORTANT: Start with AGENTS.md
+When loading memory, prioritize reading AGENTS.md first. This file contains instructions for coding agents. Treat AGENTS.md as your effective `CLAUDE.md` file.
 
-## Claude-Specific Configuration
+## 2. Please Summarize What You've Read
+At startup, after reading the files indicated above, provide a list of the files read in the chat history.
 
-### Prompt File Execution
-The primary Claude command for this repository:
-```bash
-/prompt-file {filename} {variables_json}
-```
+## Context Documents
 
-This command is available through `.claude/commands/prompt-file.md` and enables Claude to execute markdown files as prompts with variable substitution.
+For comprehensive project context, see [CONTEXT_DOCUMENTS_INDEX.md](./CONTEXT_DOCUMENTS_INDEX.md).
 
-### Development Workflow for Claude
-
-When working with this repository, Claude should:
-
-Look for Claude Code files in .claude
-
-### Claude Command Integration
-
-Claude commands are stored in `.claude/commands/` and provide Claude-specific functionality for working with the AgentRX toolkit.
+This index contains references to:
+- Agent configurations and instructions
+- Command documentation
+- Project specifications
+- Architecture decisions
