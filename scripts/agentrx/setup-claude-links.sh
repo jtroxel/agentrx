@@ -1,288 +1,245 @@
 #!/bin/bash
 # setup-claude-links.sh
 # Creates symbolic links from .claude/ to _agents/ structure
-# and initializes CLAUDE.md with context document references
+# for Claude Code integration
 
 set -e
 
+VERSION="1.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# Find project root (look for _agents or .claude directory)
+find_project_root() {
+    local dir="$1"
+    while [ "$dir" != "/" ]; do
+        if [ -d "$dir/_agents" ] || [ -d "$dir/.claude" ]; then
+            echo "$dir"
+            return 0
+        fi
+        dir=$(dirname "$dir")
+    done
+    echo ""
+    return 1
+}
+
+PROJECT_ROOT="${PROJECT_ROOT:-$(find_project_root "$SCRIPT_DIR")}"
+if [ -z "$PROJECT_ROOT" ]; then
+    PROJECT_ROOT="$(pwd)"
+fi
+
 AGENTS_DIR="$PROJECT_ROOT/_agents"
 CLAUDE_DIR="$PROJECT_ROOT/.claude"
 
-echo "=== AgentRX Claude Code Setup ==="
+# Colors
+if [ -t 1 ]; then
+    GREEN='\033[0;32m'
+    BLUE='\033[0;34m'
+    YELLOW='\033[1;33m'
+    RED='\033[0;31m'
+    NC='\033[0m'
+else
+    GREEN='' BLUE='' YELLOW='' RED='' NC=''
+fi
+
+print_success() { echo -e "${GREEN}$1${NC}"; }
+print_info() { echo -e "${BLUE}$1${NC}"; }
+print_warn() { echo -e "${YELLOW}$1${NC}"; }
+print_error() { echo -e "${RED}$1${NC}"; }
+
+usage() {
+    cat << EOF
+AgentRx Claude Code Setup v$VERSION
+
+Usage: setup-claude-links.sh [OPTIONS]
+
+Creates symbolic links in .claude/ directory for Claude Code integration.
+
+Options:
+  --project-root DIR    Set project root directory
+  --clean               Remove existing links before creating new ones
+  -v, --verbose         Show detailed output
+  -h, --help            Show this help message
+
+Environment:
+  PROJECT_ROOT    Override project root detection
+EOF
+    exit 0
+}
+
+CLEAN=false
+VERBOSE=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --project-root)
+            PROJECT_ROOT="$2"
+            AGENTS_DIR="$PROJECT_ROOT/_agents"
+            CLAUDE_DIR="$PROJECT_ROOT/.claude"
+            shift 2
+            ;;
+        --clean)
+            CLEAN=true
+            shift
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+echo ""
+echo "AgentRx Claude Code Setup v$VERSION"
+echo "========================================"
 echo "Project root: $PROJECT_ROOT"
-echo "Agents dir: $AGENTS_DIR"
-echo "Claude dir: $CLAUDE_DIR"
+echo "Agents dir:   $AGENTS_DIR"
+echo "Claude dir:   $CLAUDE_DIR"
 echo ""
 
-# Create .claude directory if it doesn't exist
-mkdir -p "$CLAUDE_DIR"
+# Verify _agents exists
+if [ ! -d "$AGENTS_DIR" ]; then
+    print_error "Error: _agents directory not found at $AGENTS_DIR"
+    echo "Run 'arx init' or the init.sh script first."
+    exit 1
+fi
 
-# --- 1. Link commands as skills ---
-# Claude Code expects skills in .claude/skills/<name>/SKILL.md
-# We link _agents/commands/<namespace>/<command>.md files
+# Create .claude directory
+mkdir -p "$CLAUDE_DIR/commands"
+mkdir -p "$CLAUDE_DIR/skills"
+
+# Clean existing links if requested
+if [ "$CLEAN" = true ]; then
+    print_info "Cleaning existing links..."
+    find "$CLAUDE_DIR" -type l -delete 2>/dev/null || true
+fi
+
+# --- Link Commands ---
+print_info "Setting up command links..."
 
 COMMANDS_DIR="$AGENTS_DIR/commands"
-SKILLS_DIR="$CLAUDE_DIR/skills"
-
 if [ -d "$COMMANDS_DIR" ]; then
-    echo "Setting up skills from commands..."
-    mkdir -p "$SKILLS_DIR"
+    # Find all namespace directories (e.g., agentrx, project-name)
+    for namespace_dir in "$COMMANDS_DIR"/*/; do
+        if [ -d "$namespace_dir" ]; then
+            namespace=$(basename "$namespace_dir")
+            target_link="$CLAUDE_DIR/commands/$namespace"
 
-    # Find all .md files in commands (excluding README, SUMMARY, etc.)
-    find "$COMMANDS_DIR" -name "*.md" -type f | while read -r cmd_file; do
-        filename=$(basename "$cmd_file")
+            # Remove existing link/dir
+            rm -rf "$target_link"
 
-        # Skip documentation files
-        case "$filename" in
-            README.md|SUMMARY.md|COMMAND_SUMMARY.md|GETTING-STARTED.md|QUICKREF.md|*USAGE*.md)
-                echo "  Skipping doc: $filename"
-                continue
-                ;;
-        esac
+            # Create relative symlink
+            rel_path=$(python3 -c "import os.path; print(os.path.relpath('$namespace_dir', '$CLAUDE_DIR/commands'))" 2>/dev/null || echo "../../_agents/commands/$namespace")
+            ln -sf "$rel_path" "$target_link"
+            print_success "  [OK] commands/$namespace"
 
-        # Extract namespace and command name
-        # Handles subdirectories like commands/agentrx/prompt-new.md -> agentrx:prompt-new
-        # Or nested like commands/agentrx/trial/work.md -> agentrx:trial-work
-        rel_path="${cmd_file#$COMMANDS_DIR/}"
-        namespace_path=$(dirname "$rel_path")
-        cmd_name="${filename%.md}"
-
-        # Create skill name with : separator for namespace
-        if [ "$namespace_path" != "." ]; then
-            # Get the top-level namespace (first directory)
-            top_namespace=$(echo "$namespace_path" | cut -d'/' -f1)
-            # Get any sub-namespace path (remaining directories)
-            sub_namespace=$(echo "$namespace_path" | cut -d'/' -f2- -s)
-
-            if [ -n "$sub_namespace" ]; then
-                # Nested: agentrx/trial/work.md -> agentrx:trial-work
-                # Replace / with - in sub-namespace
-                sub_prefix=$(echo "$sub_namespace" | tr '/' '-')
-                skill_name="${top_namespace}:${sub_prefix}-${cmd_name}"
-            else
-                # Simple: agentrx/prompt-new.md -> agentrx:prompt-new
-                skill_name="${top_namespace}:${cmd_name}"
+            if [ "$VERBOSE" = true ]; then
+                # List commands in namespace
+                find "$namespace_dir" -name "*.md" -type f | while read -r cmd_file; do
+                    filename=$(basename "$cmd_file" .md)
+                    case "$filename" in
+                        README|SUMMARY|COMMAND_*|GETTING-STARTED|QUICKREF|*USAGE*|*INDEX*)
+                            continue
+                            ;;
+                    esac
+                    echo "       /$namespace:$filename"
+                done
             fi
-        else
-            # No namespace, just the command name
-            skill_name="$cmd_name"
         fi
-
-        skill_dir="$SKILLS_DIR/$skill_name"
-        skill_file="$skill_dir/SKILL.md"
-
-        # Create skill directory
-        mkdir -p "$skill_dir"
-
-        # Create symlink (remove existing if present)
-        if [ -L "$skill_file" ]; then
-            rm "$skill_file"
-        elif [ -f "$skill_file" ]; then
-            echo "  Warning: $skill_file exists and is not a symlink, skipping"
-            continue
-        fi
-
-        # Create relative symlink
-        rel_target=$(python3 -c "import os.path; print(os.path.relpath('$cmd_file', '$skill_dir'))")
-        ln -s "$rel_target" "$skill_file"
-        echo "  Linked: /$skill_name -> $rel_path"
     done
 fi
 
-# --- 2. Link existing skills directory ---
-# Handles both flat skills (_agents/skills/my-skill/) and
-# namespaced skills (_agents/skills/agentrx/trial-work/)
-if [ -d "$AGENTS_DIR/skills" ]; then
-    echo ""
-    echo "Linking skills directory..."
+# --- Link Skills ---
+print_info "Setting up skill links..."
 
-    # Find skill directories (those containing SKILL.md)
-    find "$AGENTS_DIR/skills" -name "SKILL.md" -type f | while read -r skill_file; do
-        skill_src=$(dirname "$skill_file")
-        rel_path="${skill_src#$AGENTS_DIR/skills/}"
+SKILLS_DIR="$AGENTS_DIR/skills"
+if [ -d "$SKILLS_DIR" ]; then
+    for namespace_dir in "$SKILLS_DIR"/*/; do
+        if [ -d "$namespace_dir" ]; then
+            namespace=$(basename "$namespace_dir")
+            target_link="$CLAUDE_DIR/skills/$namespace"
 
-        # Check if this is a namespaced skill (has a parent directory)
-        parent_dir=$(dirname "$rel_path")
-        skill_base=$(basename "$rel_path")
+            rm -rf "$target_link"
+            rel_path=$(python3 -c "import os.path; print(os.path.relpath('$namespace_dir', '$CLAUDE_DIR/skills'))" 2>/dev/null || echo "../../_agents/skills/$namespace")
+            ln -sf "$rel_path" "$target_link"
+            print_success "  [OK] skills/$namespace"
 
-        if [ "$parent_dir" != "." ]; then
-            # Namespaced: skills/agentrx/trial-work -> agentrx:trial-work
-            skill_name="${parent_dir}:${skill_base}"
-        else
-            # Flat: skills/my-skill -> my-skill
-            skill_name="$skill_base"
+            if [ "$VERBOSE" = true ]; then
+                find "$namespace_dir" -name "*.md" -type f | while read -r skill_file; do
+                    filename=$(basename "$skill_file" .md)
+                    echo "       $namespace:$filename"
+                done
+            fi
         fi
-
-        skill_dst="$SKILLS_DIR/$skill_name"
-
-        if [ -L "$skill_dst" ]; then
-            rm "$skill_dst"
-        elif [ -d "$skill_dst" ]; then
-            echo "  Warning: $skill_dst exists, skipping"
-            continue
-        fi
-
-        rel_target=$(python3 -c "import os.path; print(os.path.relpath('$skill_src', '$SKILLS_DIR'))")
-        ln -s "$rel_target" "$skill_dst"
-        echo "  Linked skill: /$skill_name"
     done
 fi
 
-# --- 3. Link hooks directory ---
+# --- Link Hooks ---
 if [ -d "$AGENTS_DIR/hooks" ]; then
-    echo ""
-    echo "Linking hooks..."
+    print_info "Setting up hooks link..."
     hooks_link="$CLAUDE_DIR/hooks"
-
-    if [ -L "$hooks_link" ]; then
-        rm "$hooks_link"
-    elif [ -d "$hooks_link" ]; then
-        echo "  Warning: $hooks_link exists and is not a symlink"
-    else
-        rel_target=$(python3 -c "import os.path; print(os.path.relpath('$AGENTS_DIR/hooks', '$CLAUDE_DIR'))")
-        ln -s "$rel_target" "$hooks_link"
-        echo "  Linked: .claude/hooks -> _agents/hooks"
-    fi
+    rm -rf "$hooks_link"
+    rel_path=$(python3 -c "import os.path; print(os.path.relpath('$AGENTS_DIR/hooks', '$CLAUDE_DIR'))" 2>/dev/null || echo "../_agents/hooks")
+    ln -sf "$rel_path" "$hooks_link"
+    print_success "  [OK] hooks"
 fi
 
-# --- 4. Link settings.local.json ---
+# --- Link Settings ---
 if [ -f "$AGENTS_DIR/settings.local.json" ]; then
-    echo ""
-    echo "Linking settings..."
+    print_info "Setting up settings link..."
     settings_link="$CLAUDE_DIR/settings.local.json"
-
-    if [ -L "$settings_link" ]; then
-        rm "$settings_link"
-    elif [ -f "$settings_link" ]; then
-        echo "  Warning: $settings_link exists and is not a symlink"
-    else
-        rel_target=$(python3 -c "import os.path; print(os.path.relpath('$AGENTS_DIR/settings.local.json', '$CLAUDE_DIR'))")
-        ln -s "$rel_target" "$settings_link"
-        echo "  Linked: .claude/settings.local.json -> _agents/settings.local.json"
-    fi
-fi
-
-# --- 5. Create/Update CLAUDE.md with context reference ---
-echo ""
-echo "Updating CLAUDE.md..."
-
-CLAUDE_MD="$PROJECT_ROOT/CLAUDE.md"
-AGENT_TOOLS_INDEX="$PROJECT_ROOT/AGENT_TOOLS_INDEX.md"
-CONTEXT_INDEX="$PROJECT_ROOT/CONTEXT_DOCUMENTS_INDEX.md"
-CONTEXT_SECTION="## Context Documents"
-
-# Create AGENT_TOOLS_INDEX.md if it doesn't exist
-if [ ! -f "$AGENT_TOOLS_INDEX" ]; then  
-    echo "Creating AGENT_TOOLS_INDEX.md..."
-    cat > "$AGENT_TOOLS_INDEX" << 'INDEXEOF'
-# Agent Tools Index     
-
-This file indexes key context documents for AI coding agents.
-
-## Agent Instructions
-- [AGENTS.md](./AGENTS.md) - Primary agent instructions
-- [_agents/commands/](/_agents/commands/) - Available commands
-
-## Commands Reference
-| Command | Description |
-|---------|-------------|
-INDEXEOF
-
-    # Add commands to the index
-    if [ -d "$COMMANDS_DIR" ]; then
-        find "$COMMANDS_DIR" -name "*.md" -type f | while read -r cmd_file; do
-            filename=$(basename "$cmd_file")
-            case "$filename" in
-                README.md|SUMMARY.md|COMMAND_SUMMARY.md|GETTING-STARTED.md|QUICKREF.md|*USAGE*.md)
-                    continue
-                    ;;
-            esac
-
-            rel_path="${cmd_file#$PROJECT_ROOT/}"
-            namespace=$(basename "$(dirname "$cmd_file")")
-            cmd_name="${filename%.md}"
-
-            # Extract description from frontmatter if present
-            desc=$(grep -A1 "^description:" "$cmd_file" 2>/dev/null | tail -1 | sed 's/^description: *//' || echo "")
-            if [ -z "$desc" ]; then
-                desc="See file for details"
-            fi
-
-            echo "| \`/${namespace}:${cmd_name}\` | $desc |" >> "$CONTEXT_INDEX"
-        done
-    fi
-
-    cat >> "$CONTEXT_INDEX" << 'INDEXEOF'
-
-## Project Structure
-```
-_agents/           # Agent configurations
-  commands/        # Slash command definitions
-  skills/          # Skill definitions
-  hooks/           # Event hooks
-  scripts/         # Utility scripts
-.claude/           # Claude Code integration (symlinks)
-specs/             # Project specifications
-```
-
-## How to Update
-Run `_agents/scripts/agentrx/setup-claude-links.sh` to refresh links and regenerate this index.
-INDEXEOF
-    echo "  Created: CONTEXT_DOCUMENTS_INDEX.md"
-fi
-
-# Check if CLAUDE.md needs the context section
-if [ -f "$CLAUDE_MD" ]; then
-    if ! grep -q "CONTEXT_DOCUMENTS_INDEX" "$CLAUDE_MD"; then
-        echo "" >> "$CLAUDE_MD"
-        echo "$CONTEXT_SECTION" >> "$CLAUDE_MD"
-        echo "  Appended context section to CLAUDE.md"
-    else
-        echo "  CLAUDE.md already references CONTEXT_DOCUMENTS_INDEX.md"
-    fi
-else
-    # Create minimal CLAUDE.md
-    cat > "$CLAUDE_MD" << 'CLAUDEEOF'
-# Claude Code Guidance
-
-This file provides guidance to Claude Code when working with this repository.
-
-## Primary Instructions
-See [AGENTS.md](./AGENTS.md) for detailed agent instructions.
-
-CLAUDEEOF
-    echo "$CONTEXT_SECTION" >> "$CLAUDE_MD"
-    echo "  Created: CLAUDE.md"
-fi
-
-# Create CONTEXT_DOCUMENTS_INDEX.md if it doesn't exist
-if [ ! -f "$CONTEXT_INDEX" ]; then  
-    echo "Creating CONTEXT_DOCUMENTS_INDEX.md..."
-    cat > "$CONTEXT_INDEX" << 'INDEXEOF'
-# Context Documents Index
-
-This file indexes key context documents for the project.
-
-## Project Specifications
-- [specs/](/specs/) - Project specifications and requirements
-
-## Architecture Decisions
-- [ARCHITECTURE.md](./ARCHITECTURE.md) - Architectural decisions and rationale
-
-## Current Project Documentation
-- docs, notes, and references relevant to the project
-
-INDEXEOF
-    echo "  Created: CONTEXT_DOCUMENTS_INDEX.md"
+    rm -f "$settings_link"
+    rel_path=$(python3 -c "import os.path; print(os.path.relpath('$AGENTS_DIR/settings.local.json', '$CLAUDE_DIR'))" 2>/dev/null || echo "../_agents/settings.local.json")
+    ln -sf "$rel_path" "$settings_link"
+    print_success "  [OK] settings.local.json"
 fi
 
 # --- Summary ---
 echo ""
-echo "=== Setup Complete ==="
+echo "========================================"
+print_success "Setup complete!"
 echo ""
-echo "Skills available (type / to see them):"
-ls -1 "$SKILLS_DIR" 2>/dev/null | sed 's/^/  \//'
+
+# List available commands
+echo "Available commands:"
+if [ -d "$CLAUDE_DIR/commands" ]; then
+    for namespace_dir in "$CLAUDE_DIR/commands"/*/; do
+        if [ -d "$namespace_dir" ]; then
+            namespace=$(basename "$namespace_dir")
+            find "$namespace_dir" -name "*.md" -type f 2>/dev/null | while read -r cmd_file; do
+                filename=$(basename "$cmd_file" .md)
+                case "$filename" in
+                    README|SUMMARY|COMMAND_*|GETTING-STARTED|QUICKREF|*USAGE*|*INDEX*)
+                        continue
+                        ;;
+                esac
+                echo "  /$namespace:$filename"
+            done
+        fi
+    done
+fi
+
 echo ""
-echo "To verify: ls -la .claude/"
+echo "Available skills:"
+if [ -d "$CLAUDE_DIR/skills" ]; then
+    for namespace_dir in "$CLAUDE_DIR/skills"/*/; do
+        if [ -d "$namespace_dir" ]; then
+            namespace=$(basename "$namespace_dir")
+            find "$namespace_dir" -name "*.md" -type f 2>/dev/null | while read -r skill_file; do
+                filename=$(basename "$skill_file" .md)
+                echo "  $namespace:$filename"
+            done
+        fi
+    done
+fi
+
+echo ""
+echo "To verify: ls -la $CLAUDE_DIR/"
+echo ""

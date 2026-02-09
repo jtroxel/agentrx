@@ -1,60 +1,108 @@
 #!/bin/bash
-# AgenTrx Project Initialization Script
-# Sets up the AgenTrx directory structure for AI-assisted development
+# AgentRx Project Initialization Script
+# Sets up the AgentRx directory structure for AI-assisted development
 
 set -e
+
+VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AGENTRX_SOURCE="${AGENTRX_SOURCE:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 
 # Defaults
 MODE="copy"
 TARGET_DIR="."
-AGENTRX_SOURCE="${AGENTRX_SOURCE:-$(dirname "$0")/../../..}"
+RUN_SETUP=true
+
+# Colors (if terminal supports them)
+if [ -t 1 ]; then
+    GREEN='\033[0;32m'
+    BLUE='\033[0;34m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m' # No Color
+else
+    GREEN=''
+    BLUE=''
+    YELLOW=''
+    NC=''
+fi
+
+print_success() { echo -e "${GREEN}$1${NC}"; }
+print_info() { echo -e "${BLUE}$1${NC}"; }
+print_warn() { echo -e "${YELLOW}$1${NC}"; }
+
+usage() {
+    cat << EOF
+AgentRx Project Initialization v$VERSION
+
+Usage: init.sh [OPTIONS] [target-dir]
+
+Options:
+  --copy        Copy AgentRx files to project (default)
+  --link        Create symlinks to AgentRx assets
+  --custom      Prompt for custom directory paths
+  --no-setup    Skip Claude Code setup step
+  -h, --help    Show this help message
+
+Examples:
+  init.sh                       # Initialize current directory
+  init.sh --link /my/project    # Initialize with symlinks
+  init.sh --custom              # Interactive custom setup
+
+Environment:
+  AGENTRX_SOURCE    Source directory for AgentRx assets (default: auto-detect)
+EOF
+    exit 0
+}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
-  case $1 in
-    --copy)
-      MODE="copy"
-      shift
-      ;;
-    --link)
-      MODE="link"
-      shift
-      ;;
-    --custom)
-      MODE="custom"
-      shift
-      ;;
-    -h|--help)
-      echo "Usage: init.sh [--copy|--link|--custom] [target-dir]"
-      echo ""
-      echo "Options:"
-      echo "  --copy    Copy AgenTrx files to project (default)"
-      echo "  --link    Create symlinks to AgenTrx assets"
-      echo "  --custom  Prompt for custom directory paths"
-      echo ""
-      echo "Examples:"
-      echo "  init.sh                    # Initialize current directory"
-      echo "  init.sh --link /my/project # Initialize with symlinks"
-      exit 0
-      ;;
-    *)
-      TARGET_DIR="$1"
-      shift
-      ;;
-  esac
+    case $1 in
+        --copy)
+            MODE="copy"
+            shift
+            ;;
+        --link)
+            MODE="link"
+            shift
+            ;;
+        --custom)
+            MODE="custom"
+            shift
+            ;;
+        --no-setup)
+            RUN_SETUP=false
+            shift
+            ;;
+        -h|--help)
+            usage
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            TARGET_DIR="$1"
+            shift
+            ;;
+    esac
 done
 
 # Resolve absolute path
-TARGET_DIR=$(cd "$TARGET_DIR" 2>/dev/null && pwd || echo "$TARGET_DIR")
+if [ -d "$TARGET_DIR" ]; then
+    TARGET_DIR=$(cd "$TARGET_DIR" && pwd)
+else
+    mkdir -p "$TARGET_DIR"
+    TARGET_DIR=$(cd "$TARGET_DIR" && pwd)
+fi
 
-echo "🚀 Initializing AgenTrx Project"
+echo ""
+echo "AgentRx Project Initialization v$VERSION"
 echo "========================================"
-echo "Target: $TARGET_DIR"
-echo "Mode: $MODE"
+echo "Target:  $TARGET_DIR"
+echo "Mode:    $MODE"
+echo "Source:  $AGENTRX_SOURCE"
 echo ""
 
-# Create target directory if needed
-mkdir -p "$TARGET_DIR"
 cd "$TARGET_DIR"
 
 # Define directory structure
@@ -64,70 +112,64 @@ DOCS_DIR="$PROJECT_DIR/docs/agentrx"
 
 # Custom mode - prompt for directories
 if [ "$MODE" = "custom" ]; then
-  echo "📁 Custom Directory Configuration"
-  echo ""
-  read -p "Agent assets directory [$AGENTRX_DIR]: " input
-  AGENTRX_DIR="${input:-$AGENTRX_DIR}"
+    print_info "Custom Directory Configuration"
+    echo ""
+    read -p "Agent assets directory [$AGENTRX_DIR]: " input
+    AGENTRX_DIR="${input:-$AGENTRX_DIR}"
 
-  read -p "Project directory [$PROJECT_DIR]: " input
-  PROJECT_DIR="${input:-$PROJECT_DIR}"
+    read -p "Project directory [$PROJECT_DIR]: " input
+    PROJECT_DIR="${input:-$PROJECT_DIR}"
 
-  read -p "Documentation directory [$DOCS_DIR]: " input
-  DOCS_DIR="${input:-$DOCS_DIR}"
-  echo ""
+    read -p "Documentation directory [$DOCS_DIR]: " input
+    DOCS_DIR="${input:-$DOCS_DIR}"
+    echo ""
 fi
 
-echo "📂 Creating directory structure..."
+# --- Create Directory Structure ---
+print_info "Creating directory structure..."
 
-# Create _agents structure
+# _agents structure
 mkdir -p "$AGENTRX_DIR/commands/agentrx"
 mkdir -p "$AGENTRX_DIR/skills/agentrx"
 mkdir -p "$AGENTRX_DIR/hooks/agentrx"
 mkdir -p "$AGENTRX_DIR/scripts/agentrx"
-echo "  ✅ $AGENTRX_DIR/"
+mkdir -p "$AGENTRX_DIR/agents/agentrx"
+print_success "  [OK] $AGENTRX_DIR/"
 
-# Create _project structure
+# _project structure
 mkdir -p "$PROJECT_DIR/src"
 mkdir -p "$DOCS_DIR/deltas"
 mkdir -p "$DOCS_DIR/vibes"
 mkdir -p "$DOCS_DIR/history"
-echo "  ✅ $PROJECT_DIR/"
-echo "  ✅ $DOCS_DIR/"
+print_success "  [OK] $PROJECT_DIR/"
+print_success "  [OK] $DOCS_DIR/"
 
-# Create .claude directory for Claude Code integration
+# .claude directory
 mkdir -p ".claude/commands"
 mkdir -p ".claude/skills"
-echo "  ✅ .claude/"
+print_success "  [OK] .claude/"
 
-# Handle copy vs link mode for AgenTrx assets
+# --- Handle Link Mode ---
 if [ "$MODE" = "link" ] && [ -d "$AGENTRX_SOURCE/_agents" ]; then
-  echo ""
-  echo "🔗 Creating symlinks to AgenTrx assets..."
+    echo ""
+    print_info "Creating symlinks to AgentRx assets..."
 
-  # Link command files
-  if [ -d "$AGENTRX_SOURCE/_agents/commands/agentrx" ]; then
-    ln -sf "$AGENTRX_SOURCE/_agents/commands/agentrx" "$AGENTRX_DIR/commands/" 2>/dev/null || true
-    echo "  ✅ Linked commands/agentrx"
-  fi
-
-  # Link skill directories
-  if [ -d "$AGENTRX_SOURCE/_agents/skills/agentrx" ]; then
-    ln -sf "$AGENTRX_SOURCE/_agents/skills/agentrx" "$AGENTRX_DIR/skills/" 2>/dev/null || true
-    echo "  ✅ Linked skills/agentrx"
-  fi
-
-  # Link scripts
-  if [ -d "$AGENTRX_SOURCE/_agents/scripts/agentrx" ]; then
-    ln -sf "$AGENTRX_SOURCE/_agents/scripts/agentrx" "$AGENTRX_DIR/scripts/" 2>/dev/null || true
-    echo "  ✅ Linked scripts/agentrx"
-  fi
+    for subdir in commands skills scripts hooks agents; do
+        if [ -d "$AGENTRX_SOURCE/_agents/$subdir/agentrx" ]; then
+            rm -rf "$AGENTRX_DIR/$subdir/agentrx"
+            ln -sf "$AGENTRX_SOURCE/_agents/$subdir/agentrx" "$AGENTRX_DIR/$subdir/agentrx"
+            print_success "  [OK] Linked $subdir/agentrx"
+        fi
+    done
 fi
 
-# Create AGENTS.md if it doesn't exist
+# --- Create Configuration Files ---
+echo ""
+print_info "Creating configuration files..."
+
+# AGENTS.md
 if [ ! -f "AGENTS.md" ]; then
-  echo ""
-  echo "📄 Creating AGENTS.md..."
-  cat > "AGENTS.md" <<'EOF'
+    cat > "AGENTS.md" << 'EOF'
 # AGENTS Guidance
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
@@ -139,94 +181,159 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 When starting a chat conversation or session for this project, read all the files indicated below. Do NOT read anything else until directed in prompts.
 
 ### PARALLEL READ the following ONLY:
+#### AgentRx Instructions
 - README.md # to understand the basics of the project and directory structure
 - _agents/commands/agentrx/*.md # agentrx commands
-- _agents/skills/agentrx/** # agentrx skills
+- _agents/skills/agentrx/*.md # agentrx skills
 
-### IMPORTANT: Show What You've Read
+#### Project Context
+Project-specific commands, skills, and context documents follow similar naming conventions.
+Add those context documents into your context when prompted by the user.
+
+## IMPORTANT: List What Files You've Read on Startup
 At startup, after reading the files indicated above, print a list of the files read into the chat terminal.
 EOF
-  echo "  ✅ AGENTS.md"
+    print_success "  [OK] AGENTS.md"
 fi
 
-# Create CLAUDE.md if it doesn't exist
+# CLAUDE.md
 if [ ! -f "CLAUDE.md" ]; then
-  echo "📄 Creating CLAUDE.md..."
-  cat > "CLAUDE.md" <<'EOF'
+    cat > "CLAUDE.md" << 'EOF'
 # Claude Code Guidance
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 1. IMPORTANT: Start with AGENTS.md
-When loading memory, prioritize reading AGENTS.md first. This file contains instructions for coding agents. Treat AGENTS.md as your effective `CLAUDE.md` file.
+When loading memory, prioritize reading AGENTS.md first. This file contains instructions for coding agents.
 
 ## 2. Please Summarize What You've Read
 At startup, after reading the files indicated above, provide a list of the files read in the chat history.
+
+## Context Documents
+For comprehensive project context, see [CONTEXT_DOCUMENTS_INDEX.md](./CONTEXT_DOCUMENTS_INDEX.md).
 EOF
-  echo "  ✅ CLAUDE.md"
+    print_success "  [OK] CLAUDE.md"
 fi
 
-# Create .env with AgenTrx environment variables
+# CHAT_START.md
+if [ ! -f "CHAT_START.md" ]; then
+    cat > "CHAT_START.md" << 'EOF'
+---
+arx: config
+name: chat-start
+description: Bootstrap instructions for coding agents starting new sessions
+version: 1
+---
+
+# AgentRx Bootstrap Instructions
+
+> **For Coding Agents**: Follow these instructions precisely at session start.
+
+## Step 1: Load Core Context
+
+Read these files **in parallel** to establish AgentRx capabilities:
+
+### Commands (treat as native slash commands)
+```
+_agents/commands/agentrx/*.md
+```
+
+### Skills
+```
+_agents/skills/agentrx/*.md
+```
+
+## Step 2: Confirm Bootstrap
+
+After loading, output a confirmation listing available commands and skills.
+
+## Important Notes
+
+1. **Commands as native** - Treat `_agents/commands/` items as native CLI slash commands
+2. **Project context** - Load project-specific files when user references them
+3. **ARX templates** - Files with `arx: template` front matter are renderable templates
+4. **Follow precisely** - If something wasn't specified, don't do it
+EOF
+    print_success "  [OK] CHAT_START.md"
+fi
+
+# .env
 if [ ! -f ".env" ]; then
-  echo "📄 Creating .env..."
-  cat > ".env" <<EOF
-# AgenTrx Configuration
+    cat > ".env" << EOF
+# AgentRx Configuration
 AGENTRX_DIR=$AGENTRX_DIR
 AGENTRX_PROJECT_DIR=$PROJECT_DIR
 AGENTRX_DOCS_DIR=$DOCS_DIR
 EOF
-  echo "  ✅ .env"
+    print_success "  [OK] .env"
 else
-  echo ""
-  echo "📄 Appending to existing .env..."
-  cat >> ".env" <<EOF
+    if ! grep -q "AGENTRX_DIR" ".env" 2>/dev/null; then
+        echo "" >> ".env"
+        cat >> ".env" << EOF
 
-# AgenTrx Configuration
+# AgentRx Configuration
 AGENTRX_DIR=$AGENTRX_DIR
 AGENTRX_PROJECT_DIR=$PROJECT_DIR
 AGENTRX_DOCS_DIR=$DOCS_DIR
 EOF
-  echo "  ✅ .env (updated)"
+        print_success "  [OK] .env (updated)"
+    else
+        print_warn "  [--] .env (already configured)"
+    fi
 fi
 
-# Create .gitignore entries if .gitignore exists
+# .gitignore
 if [ -f ".gitignore" ]; then
-  if ! grep -q "# AgenTrx" ".gitignore" 2>/dev/null; then
-    echo "" >> ".gitignore"
-    echo "# AgenTrx" >> ".gitignore"
-    echo ".env" >> ".gitignore"
-    echo "  ✅ .gitignore (updated)"
-  fi
+    if ! grep -q "# AgentRx" ".gitignore" 2>/dev/null; then
+        cat >> ".gitignore" << 'EOF'
+
+# AgentRx
+.env
+*.local.json
+EOF
+        print_success "  [OK] .gitignore (updated)"
+    fi
 fi
 
-# Setup Claude Code integration (symlinks in .claude/)
-echo ""
-echo "🔗 Setting up Claude Code integration..."
+# --- Setup Claude Code Integration ---
+if [ "$RUN_SETUP" = true ]; then
+    echo ""
+    print_info "Setting up Claude Code integration..."
 
-# Link commands to .claude/commands
-if [ -d "$AGENTRX_DIR/commands/agentrx" ]; then
-  ln -sf "../../$AGENTRX_DIR/commands/agentrx" ".claude/commands/agentrx" 2>/dev/null || true
-  echo "  ✅ .claude/commands/agentrx -> $AGENTRX_DIR/commands/agentrx"
+    # Link commands to .claude/commands
+    if [ -d "$AGENTRX_DIR/commands/agentrx" ]; then
+        rm -f ".claude/commands/agentrx"
+        ln -sf "../../$AGENTRX_DIR/commands/agentrx" ".claude/commands/agentrx"
+        print_success "  [OK] .claude/commands/agentrx"
+    fi
+
+    # Link skills to .claude/skills
+    if [ -d "$AGENTRX_DIR/skills/agentrx" ]; then
+        rm -f ".claude/skills/agentrx"
+        ln -sf "../../$AGENTRX_DIR/skills/agentrx" ".claude/skills/agentrx"
+        print_success "  [OK] .claude/skills/agentrx"
+    fi
 fi
 
-# Link skills to .claude/skills
-if [ -d "$AGENTRX_DIR/skills/agentrx" ]; then
-  ln -sf "../../$AGENTRX_DIR/skills/agentrx" ".claude/skills/agentrx" 2>/dev/null || true
-  echo "  ✅ .claude/skills/agentrx -> $AGENTRX_DIR/skills/agentrx"
-fi
-
+# --- Summary ---
 echo ""
 echo "========================================"
-echo "✅ AgenTrx initialized successfully!"
+print_success "AgentRx initialized successfully!"
 echo ""
 echo "Directory structure:"
 echo "  $AGENTRX_DIR/          - Agent assets (commands, skills, hooks, scripts)"
 echo "  $PROJECT_DIR/          - Your project code"
-echo "  $DOCS_DIR/   - Development docs (deltas, vibes, history)"
+echo "  $DOCS_DIR/             - Development docs (deltas, vibes, history)"
+echo "  .claude/               - Claude Code integration"
 echo ""
 echo "Next steps:"
 echo "  1. Review AGENTS.md and CLAUDE.md"
-echo "  2. Add your project code to $PROJECT_DIR/"
+echo "  2. Add your project code to $PROJECT_DIR/src/"
 echo "  3. Use /agentrx:prompt-new to create prompts"
 echo "  4. Use /agentrx:trial-init for parallel development"
+echo ""
+echo "Python CLI (if installed):"
+echo "  arx init       - Re-run initialization"
+echo "  arx setup      - Setup Claude Code links"
+echo "  arx --help     - Show all commands"
 echo ""
