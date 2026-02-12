@@ -41,9 +41,6 @@ Set up the AgentRx directory structure for AI-assisted development.
 │           ├── deltas/             # Change request documents
 │           ├── vibes/              # Prompt/vibe files
 │           └── history/            # Completed work history
-├── .claude/                        # Claude Code integration
-│   ├── commands/agentrx -> ...     # Symlink to commands
-│   └── skills/agentrx -> ...       # Symlink to skills
 ├── AGENTS.md                       # Agent instructions
 ├── CLAUDE.md                       # Claude Code guidance
 ├── CHAT_START.md                   # Session bootstrap instructions
@@ -94,19 +91,12 @@ Prompts for custom directory paths. Use when:
 - Non-standard directory layout required
 - Specific paths needed for organization
 
-## Post-Init Setup
+## Copy Mode Behavior
 
-After initialization, run the Claude Code setup:
-
-```bash
-# Via Python CLI
-arx setup
-
-# Or via shell script
-./_agents/scripts/agentrx/setup-claude-links.sh
-```
-
-This creates symlinks in `.claude/` for Claude Code integration.
+Copy mode is **non-destructive** - it will skip existing files rather than overwriting them. This allows you to:
+- Safely re-run `arx init` to get new files from updates
+- Preserve local modifications to copied files
+- Incrementally adopt AgentRx assets
 
 ## Implementation
 
@@ -116,8 +106,7 @@ When this command is executed:
 2. Create directory structure based on mode
 3. Create configuration files (AGENTS.md, CLAUDE.md, CHAT_START.md)
 4. Create .env with environment variables
-5. Run Claude Code setup (symlinks)
-6. Report what was created
+5. Report what was created
 
 ## See Also
 

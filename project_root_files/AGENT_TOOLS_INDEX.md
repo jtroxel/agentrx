@@ -21,9 +21,9 @@ _agents/           # Agent configurations
   skills/          # Skill definitions
   hooks/           # Event hooks
   scripts/         # Utility scripts
-.claude/           # Claude Code integration (symlinks)
+_project/          # Project code and documentation
 specs/             # Project specifications
 ```
 
 ## How to Update
-Run `_agents/scripts/agentrx/setup-claude-links.sh` to refresh links and regenerate this index.
+Re-run `arx init` to refresh AgentRx assets (non-destructive).
