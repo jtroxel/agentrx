@@ -1,1 +1,0 @@
-../../../commands/agentrx/init.md
