@@ -79,3 +79,6 @@ build/
 *.pyo
 *.pyd
 *.egg-info/
+
+# Embedded repos (managed separately)
+templates/_arx_agent_tools/

@@ -7,7 +7,7 @@ Environment variables (written to .env, read as defaults):
   ARX_AGENT_TOOLS    Agent assets directory (default: $ARX_PROJECT_ROOT/_agents/).
   ARX_TARGET_PROJ    Target project directory (default: $ARX_PROJECT_ROOT/_project/).
   ARX_DOCS_OUT       Docs output directory (default: $ARX_TARGET_PROJ/docs/agentrx).
-  AGENTRX_SOURCE     Source of AgentRx assets used with --link or --copy.
+  AGENTRX_SOURCE     Source of AgentRx assets used with --link-arx or copy.
 """
 
 import os
@@ -118,6 +118,10 @@ DEFAULT_DOCS_DIR = "_project/docs/agentrx"
 
 # Sub-category names under the agent-tools directory
 AGENT_SUBDIRS = ["commands", "skills", "scripts", "hooks", "agents"]
+
+# Name of the agents-tools template subdir inside templates/
+# This subtree is routed to ARX_AGENT_TOOLS instead of the project root.
+AGENTS_TEMPLATE_SUBDIR = "_arx_agent_tools"
 
 
 # ---------------------------------------------------------------------------
@@ -295,24 +299,62 @@ class _Runner:
 
     def mkdir(self, path: Path) -> None:
         if self.dry_run:
-            if path in self._seen_dirs or path.exists():
+            resolved = path.resolve()
+            if resolved in self._seen_dirs:
                 return
-            self._seen_dirs.add(path)
+            self._seen_dirs.add(resolved)
             # Show path relative to CWD when possible, else absolute
             try:
                 display = path.relative_to(Path.cwd())
             except ValueError:
                 display = path
-            click.echo(f"  [make] {display}/")
+            if path.exists():
+                click.secho(f"  [skip] {display}/  (exists)", fg="yellow")
+            else:
+                click.echo(f"  [make] {display}/")
         else:
             _mkdir(path, self.verbose)
 
+    def _write_copy_line(self, filename: str, from_dir: str, to_dir: str) -> None:
+        """Print the [copy] dry-run line in 'from … to …' format.
+
+        Keeps output to one line when it fits; wraps from/to onto a second
+        indented line when the combined text would exceed 80 columns.
+        """
+        from_triv = from_dir in (".", "")
+        to_triv = to_dir in (".", "")
+        if from_triv and to_triv:
+            click.echo(f"  [copy] {filename}")
+            return
+        if from_triv:
+            suffix = f"  to {to_dir}/"
+        elif to_triv:
+            suffix = f"  from {from_dir}/"
+        else:
+            suffix = f"  from {from_dir}/  to {to_dir}/"
+        line = f"  [copy] {filename}{suffix}"
+        if len(line) <= 120:
+            click.echo(line)
+        else:
+            click.echo(f"  [copy] {filename}")
+            if not from_triv:
+                click.echo(f"         from {from_dir}/")
+            if not to_triv:
+                click.echo(f"           to {to_dir}/")
+
     def write(self, path: Path, content: str, skip_existing: bool = True,
-              label: Optional[str] = None) -> None:
+              label: Optional[str] = None, src: Optional[Path] = None) -> None:
         if self.dry_run:
             name = label or path.name
             if skip_existing and path.exists():
                 click.secho(f"  [skip] {name}  (exists)", fg="yellow")
+            elif src is not None:
+                from_dir = str(Path(src).parent)
+                try:
+                    to_dir = str(path.parent.relative_to(Path.cwd()))
+                except ValueError:
+                    to_dir = str(path.parent)
+                self._write_copy_line(Path(src).name, from_dir, to_dir)
             else:
                 click.echo(f"  [write] {name}")
         else:
@@ -321,17 +363,35 @@ class _Runner:
     def symlink(self, link: Path, target: Path) -> None:
         if self.dry_run:
             try:
-                rel = os.path.relpath(target, link.parent)
+                link_disp = link.relative_to(Path.cwd())
             except ValueError:
-                rel = str(target)
-            click.echo(f"  [link]  {link.name}  ->  {rel}")
+                link_disp = link
+            # Show target as AGENTRX_SOURCE-relative when possible
+            agentrx_src = os.environ.get("AGENTRX_SOURCE", "")
+            if agentrx_src:
+                try:
+                    target_disp: Path | str = Path("AGENTRX_SOURCE") / target.relative_to(agentrx_src)
+                except ValueError:
+                    target_disp = target
+            else:
+                target_disp = target
+            line = f"  [link]  {target_disp}  ->  {link_disp}"
+            if len(line) <= 120:
+                click.echo(line)
+            else:
+                click.echo(f"  [link]  {target_disp}")
+                click.echo(f"       ->  {link_disp}")
         else:
             _make_symlink(link, target, self.verbose)
 
     def copy_tree(self, src: Path, dst: Path) -> tuple[int, int]:
         if self.dry_run:
             cnt = sum(1 for f in src.rglob("*") if f.is_file() and not _is_junk(f.relative_to(src)))
-            click.echo(f"  [copy]  {src.name}/  ->  {dst}  ({cnt} files)")
+            try:
+                dst_disp = dst.relative_to(Path.cwd())
+            except ValueError:
+                dst_disp = dst
+            click.echo(f"  [copy]  {src}/  ->  {dst_disp}/  ({cnt} files)")
             return cnt, 0
         return _copy_tree_safe(src, dst, self.verbose)
 
@@ -381,28 +441,32 @@ def _copy_one_subdir(sub: str, agents_path: Path, src_agents: Path,
 
 def _setup_agent_tools_link(agents_path: Path, agentrx_source: str,
                             runner: _Runner) -> None:
-    """Link mode: create parent subdirs + symlink each agentrx/ leaf."""
-    src_agents = Path(agentrx_source) / "_agents"
+    """Link mode: create parent subdirs + symlink each agentrx/ leaf.
+
+    Per README: symlinks target templates/AGENTS_TEMPLATE_SUBDIR/**/agentrx/,
+    not the live _agents/ tree.
+    """
+    templates_dir = _find_templates_dir(agentrx_source)
+    if not templates_dir:
+        raise InitError(f"Cannot find templates/ dir in AGENTRX_SOURCE: {agentrx_source}")
+    src_agents = templates_dir / AGENTS_TEMPLATE_SUBDIR
     if not src_agents.is_dir():
-        raise InitError(f"AGENTRX_SOURCE has no _agents/ directory: {agentrx_source}")
+        raise InitError(
+            f"AGENTRX_SOURCE templates has no {AGENTS_TEMPLATE_SUBDIR}/ dir: {templates_dir}"
+        )
     click.secho("  Creating deep symlinks to AgentRx assets...", fg="cyan")
     for sub in AGENT_SUBDIRS:
         _link_one_subdir(sub, agents_path, src_agents, runner)
 
 
-def _setup_agent_tools_copy(agents_path: Path, agentrx_source: Optional[str],
-                            runner: _Runner) -> None:
-    """Copy mode: create full skeleton + copy agentrx/ files from source."""
+def _setup_agent_tools_copy(agents_path: Path, runner: _Runner) -> None:
+    """Copy mode: create standard category skeleton under agents_path.
+
+    Per README: file contents come from templates/AGENTS_TEMPLATE_SUBDIR/ via
+    _copy_templates routing.  Here we only ensure the skeleton dirs exist.
+    """
     for sub in AGENT_SUBDIRS:
-        runner.mkdir(agents_path / sub / "agentrx")
-    if not agentrx_source:
-        return
-    src_agents = Path(agentrx_source) / "_agents"
-    if not src_agents.is_dir():
-        return
-    click.secho("  Copying AgentRx assets...", fg="cyan")
-    for sub in AGENT_SUBDIRS:
-        _copy_one_subdir(sub, agents_path, src_agents, runner)
+        runner.mkdir(agents_path / sub)
 
 
 def _setup_agent_tools(agents_path: Path, link_arx: bool,
@@ -413,57 +477,51 @@ def _setup_agent_tools(agents_path: Path, link_arx: bool,
     MISSING + link mode  -> parent subdirs only; symlink each agentrx/ leaf.
     MISSING + copy mode  -> full skeleton; copy agentrx/ files from source.
     """
-    if agents_path.exists():
-        try:
-            display = agents_path.relative_to(Path.cwd())
-        except ValueError:
-            display = agents_path
-        click.secho(f"  [skip] {display}/  (exists)", fg="yellow")
+    already_exists = agents_path.exists()
+    runner.mkdir(agents_path)
+    if already_exists:
         return
     if link_arx:
         if not agentrx_source:
-            raise InitError("--link requires --agentrx-source or the AGENTRX_SOURCE env var.")
+            raise InitError("--link-arx requires --agentrx-source or the AGENTRX_SOURCE env var.")
         _setup_agent_tools_link(agents_path, agentrx_source, runner)
     else:
-        _setup_agent_tools_copy(agents_path, agentrx_source, runner)
+        _setup_agent_tools_copy(agents_path, runner)
 
 
 def _setup_project_dir(proj_path: Path, runner: _Runner) -> None:
     """Create target project directory (and src/) if absent; leave alone if exists."""
-    if proj_path.exists():
-        try:
-            display = proj_path.relative_to(Path.cwd())
-        except ValueError:
-            display = proj_path
-        click.secho(f"  [skip] {display}/  (exists)", fg="yellow")
-        return
+    already_exists = proj_path.exists()
     runner.mkdir(proj_path)
-    runner.mkdir(proj_path / "src")
+    if not already_exists:
+        runner.mkdir(proj_path / "src")
 
 
 def _setup_docs_dir(docs_path: Path, runner: _Runner) -> None:
     """Create docs output directory (with artifact subdirs) if absent."""
-    if docs_path.exists():
-        try:
-            display = docs_path.relative_to(Path.cwd())
-        except ValueError:
-            display = docs_path
-        click.secho(f"  [skip] {display}/  (exists)", fg="yellow")
-        return
+    already_exists = docs_path.exists()
     runner.mkdir(docs_path)
-    for sub in ("deltas", "vibes", "history"):
-        runner.mkdir(docs_path / sub)
+    if not already_exists:
+        for sub in ("deltas", "vibes", "history"):
+            runner.mkdir(docs_path / sub)
 
 
 def _write_template_item(item: Path, dst: Path, context: Dict[str, Any],
-                         runner: _Runner, label: Optional[str] = None) -> None:
+                         runner: _Runner, label: Optional[str] = None,
+                         src_display: Optional[Path] = None) -> None:
     """Write a single template file (text or binary) to *dst*."""
     try:
         text = _safe_mustache_render(item.read_text(encoding="utf-8"), context)
-        runner.write(dst, text, skip_existing=True, label=label)
+        runner.write(dst, text, skip_existing=True, label=label, src=src_display or item)
     except UnicodeDecodeError:
+        src = src_display or item
         if runner.dry_run:
-            click.echo(f"  [copy]  {label or dst.name}  (binary)")
+            from_dir = str(Path(src).parent)
+            try:
+                to_dir = str(dst.parent.relative_to(Path.cwd()))
+            except ValueError:
+                to_dir = str(dst.parent)
+            runner._write_copy_line(Path(src).name + "  (binary)", from_dir, to_dir)
         else:
             shutil.copy2(item, dst)
             if runner.verbose:
@@ -478,12 +536,28 @@ def _route_template(rel: Path, root: Path, agents_path: Path,
     return root, rel
 
 
+def _templates_display(templates_dir: Path, agentrx_source: Optional[str]) -> Path:
+    """Return a short display path for the templates directory header."""
+    if agentrx_source:
+        try:
+            return templates_dir.relative_to(Path(agentrx_source))
+        except ValueError:
+            pass
+    try:
+        return templates_dir.relative_to(Path.cwd())
+    except ValueError:
+        return templates_dir
+
+
 def _copy_templates(root: Path, agents_path: Path,
                     agentrx_source: Optional[str],
-                    context: Dict[str, Any], runner: _Runner) -> None:
+                    context: Dict[str, Any], runner: _Runner,
+                    link_arx: bool = False) -> None:
     """Process templates/ and route results to the correct destination.
 
-    Templates under ARX_AGENTS_DIR/ are routed to *agents_path*.
+    Templates under AGENTS_TEMPLATE_SUBDIR/ are routed to *agents_path*
+    (populating ARX_AGENT_TOOLS per README spec).  In link mode that subtree
+    is skipped because _setup_agent_tools_link already created symlinks for it.
     All other templates are routed to *root*.
     .git and OS junk paths are skipped unconditionally.
     """
@@ -491,19 +565,27 @@ def _copy_templates(root: Path, agents_path: Path,
     if not templates_dir:
         return
 
+    tmpl_disp = _templates_display(templates_dir, agentrx_source)
+
     click.echo()
-    click.secho(f"Templates  ({templates_dir}):", fg="cyan")
+    click.secho(f"Templates  ({tmpl_disp}):", fg="cyan")
     for item in sorted(templates_dir.rglob("*")):
         if item.is_dir():
             continue
         rel = item.relative_to(templates_dir)
         if _is_junk(rel):
             continue
-        dst_base, rel_in_dst = _route_template(rel, root, agents_path, "ARX_AGENTS_DIR")
+        # In link mode, skip the agents subtree — it is already symlinked
+        if link_arx and rel.parts[0] == AGENTS_TEMPLATE_SUBDIR:
+            continue
+        dst_base, rel_in_dst = _route_template(rel, root, agents_path, AGENTS_TEMPLATE_SUBDIR)
         dst = dst_base / rel_in_dst
         if dst.parent != dst_base and not dst.parent.exists():
             runner.mkdir(dst.parent)
-        _write_template_item(item, dst, context, runner, label=str(rel_in_dst))
+        # src_display uses templates/<rel> so dry-run shows "from templates/..."
+        _write_template_item(item, dst, context, runner,
+                             label=str(rel_in_dst),
+                             src_display=Path("templates") / rel)
 
 
 # ---------------------------------------------------------------------------
@@ -512,14 +594,14 @@ def _copy_templates(root: Path, agents_path: Path,
 
 @click.command()
 @click.argument("target_dir", default=".", type=click.Path())
-@click.option("-l", "--link", "link_arx", is_flag=True,
+@click.option("-l", "--link-arx", "link_arx", is_flag=True,
               help="Symlink agentrx/ assets from AGENTRX_SOURCE instead of copying.")
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed output.")
 @click.option("--dry-run", "dry_run", is_flag=True,
               help="Print planned actions without making any changes.")
 @click.option("--agentrx-source", envvar="AGENTRX_SOURCE",
               type=click.Path(exists=True),
-              help="AgentRx source directory (required with --link; optional for copy).")
+              help="AgentRx source directory (required with --link-arx; optional for copy).")
 @click.option("--agents-dir", "agents_dir", envvar=ENV_AGENT_TOOLS, type=str,
               help=f"Agent-tools dir.  Env: {ENV_AGENT_TOOLS}  [default: {DEFAULT_AGENTS_DIR}]")
 @click.option("--target-proj", "target_proj", envvar=ENV_TARGET_PROJ, type=str,
@@ -550,7 +632,7 @@ def init(
       ARX_AGENT_TOOLS  exists -> left untouched.
       ARX_AGENT_TOOLS  missing, copy mode -> created with full agentrx/ skeleton.
                                              Files copied from AGENTRX_SOURCE if set.
-      ARX_AGENT_TOOLS  missing, --link    -> parent subdirs created (no agentrx/ leaf).
+      ARX_AGENT_TOOLS  missing, --link-arx -> parent subdirs created (no agentrx/ leaf).
                                              Each agentrx/ subdir symlinked to source.
       ARX_TARGET_PROJ  exists -> left untouched.
       ARX_TARGET_PROJ  missing -> created (with src/ inside).
@@ -565,7 +647,7 @@ def init(
     Examples:
       arx init
       arx init /path/to/project
-      arx init --link --agentrx-source ~/dev/agentrx-src
+      arx init --link-arx --agentrx-source ~/dev/agentrx-src
       arx init --agents-dir ~/dev/agentrx-src --target-proj ~/dev/myproj --dry-run
     """
     try:
@@ -647,7 +729,7 @@ def _run_init(
     click.secho("AgentRx Project Initialization", fg="blue", bold=True)
     click.echo("=" * 44)
     click.echo(f"  {ENV_PROJECT_ROOT:20s} = {root}")
-    click.echo(f"  Mode                 = {'link (--link)' if link_arx else 'copy (default)'}")
+    click.echo(f"  Mode                 = {'link (--link-arx)' if link_arx else 'copy (default)'}")
     if agentrx_source:
         click.echo(f"  AGENTRX_SOURCE       = {agentrx_source}")
     if dry_run:
@@ -680,7 +762,7 @@ def _run_init(
     _setup_docs_dir(docs_path, runner)
 
     # ── copy / process templates ──────────────────────────────────────────────
-    _copy_templates(root, agents_path, agentrx_source, context, runner)
+    _copy_templates(root, agents_path, agentrx_source, context, runner, link_arx=link_arx)
 
     # ── root bootstrap files ──────────────────────────────────────────────────
     click.echo()

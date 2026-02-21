@@ -1,55 +1,136 @@
 # AgentRx
+
+AgentRx is a toolkit that helps developers build structured, repeatable agentic coding workflows. It provides slash commands, agent skills, reusable prompt templates, and a CLI (`arx`) that brings those same workflows to the terminal.
+
 ## Elevator Pitch
-AgentRx is a tool set aimed to help developers advance their agentic coding abilities.
 
-It is a customizable template for adding slash-commands, specialized agents, and agent skills to your real work.
+Drop AgentRx into any project and incrementally ratchet up your agentic coding process:
 
-## Watercooler Talk
-Want more? Drop it in, and AgentRx lets you incrementally Ratchet up your agentic coding process. 
-1. Begin by making vibe coding less chaotic... more structured, repeatable even.
-2. Advance into context engineering. Developing and maintaining structured context documentation.
-3. Grow into more advanced agentic workflows: From simple "Ralph" loops; to complex, multi-agent productivity., and Parallel "Jack-Jack" splits.
+1. Make vibe coding less chaotic — structured, repeatable prompts.
+2. Advance into context engineering — maintain living documentation alongside your code.
+3. Grow into multi-agent workflows: simple "Ralph" loops → complex parallel "Jack-Jack" splits.
 
-## Quickstart
+---
 
-### Adding AgentRx
-To get started with AgentRx, the developer pulls the repo into their system. That can be a central location or for every project. Fork it and you can contribute back!
+## Directory Structure
 
-### **`arx init`**
-The `arx init` command sets up the initial project structure with default directories. You can customize the structure using command options or environment variables.
+```
+agentrx-src/                 # AGENTRX_SOURCE — clone this once, point projects at it
+├── bin/
+│   └── init-arx.sh          # Interactive shell initializer (primary entry point)
+├── cli/
+│   ├── agentrx/
+│   │   ├── cli.py           # arx entry point
+│   │   └── commands/
+│   │       ├── init.py      # arx init — file operations engine
+│   │       └── prompt.py    # arx prompt do/new/list
+│   └── README.md            # CLI quickstart and full option reference
+├── templates/
+│   ├── _arx_agent_tools/    # Copied/linked into ARX_AGENT_TOOLS on init
+│   │   ├── commands/agentrx/
+│   │   ├── skills/agentrx/
+│   │   ├── scripts/agentrx/
+│   │   ├── hooks/agentrx/
+│   │   └── agents/
+│   └── *.md                 # Root-level bootstrap templates
+└── docs/
+    └── README.md            # ← you are here
+```
 
-The `agentrx init` command sets up this structure with the default directories, but you can customize as needed. The user is given the option of copying agentrx files, linking subdirectories into the agentrx-root, or just specifying custom directories on the filesystem.
+### Initialized project layout
+
+After `arx init`, a target project looks like:
+
+```
+./                           # ARX_PROJECT_ROOT
+├── _agents/                 # ARX_AGENT_TOOLS  — agent commands, skills, scripts, hooks
+│   ├── commands/agentrx/
+│   ├── skills/agentrx/
+│   ├── scripts/agentrx/
+│   ├── hooks/agentrx/
+│   └── agents/
+├── _project/                # ARX_TARGET_PROJ  — your source code lives here
+│   └── docs/agentrx/        # ARX_DOCS_OUT     — generated docs and vibes
+│       ├── deltas/
+│       ├── vibes/
+│       └── history/
+├── AGENTS.md                # Agent startup instructions
+├── CLAUDE.md                # Claude Code guidance
+├── CHAT_START.md            # Session bootstrap
+└── .env                     # ARX_* variables, sourced by shell / arx commands
+```
+
+---
 
 ## Environment Variables
-- `ARX_PROJECT_ROOT` - Root directory of the host project (default: current working directory).
-- `ARX_TARGET_PROJ` - Target project directory relative to project root (default: `$ARX_PROJECT_ROOT/_project/`).
-- `ARX_TOOLS` - Agent assets directory relative to the project root (default: `$ARX_PROJECT_ROOT/_agents/`).
-- `ARX_DOCS_OUT` - Documentation directory (default: `$ARX_TARGET_PROJ/docs/agentrx`).
-  - See [agentrx Docs Structure](_agents/agentrx/PROJECT_DOCS.md)
 
-## Target Directory Structure
+| Variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `AGENTRX_SOURCE` | `--agentrx-source` | _(none)_ | Path to the `agentrx-src` clone. Required for `--link-arx`; optional for copy. |
+| `ARX_PROJECT_ROOT` | _(positional)_ | CWD | Project root. Always set to wherever `arx init` runs. |
+| `ARX_AGENT_TOOLS` | `--agents-dir` | `_agents` | Agent assets directory. |
+| `ARX_TARGET_PROJ` | `--target-proj` | `_project` | Target project (source code) directory. |
+| `ARX_DOCS_OUT` | `--docs-out` | `_project/docs/agentrx` | Documentation output directory. |
 
-After initialization (`arx init`), your project directory will be structured as follows, with the agentrx assets and project code organized in a way that supports an agent-assisted development workflow. The CLI will create this structure with the default directories, but you can customize as needed using the command options or environment variables.
+---
 
-### Top Level
+## Init Workflow
+
+### Standard setup (shell entry point)
+
+```bash
+# 1. Clone AgentRx source once
+git clone https://github.com/your-org/agentrx.git ~/dev/agentrx-src
+export AGENTRX_SOURCE=~/dev/agentrx-src
+
+# 2. Create and enter your project
+mkdir ~/my-project && cd ~/my-project
+python3.13 -m venv .venv && source .venv/bin/activate
+
+# 3. Run the interactive initializer
+$AGENTRX_SOURCE/bin/init-arx.sh .
 ```
-./                           # $ARX_PROJECT_ROOT set in init - Recommended setup: make this the parent of the $ARX_TOOLS and $ARX_TARGET_PROJ directories.
-├── _agents/                 # If $ARX_AGENT_TOOLS is unset, defaults to ./_agents
-├── _project/                # If $ARX_TARGET_PROJ is unset, defaults to ./_project - Root of the source code
-│   ├── ...
-│   └── docs/agentrx/        # If $ARX_DOCS_OUT is unset, defaults to ./_project/docs/agentrx 
-│       └── ...
-├── AGENTS.md                # Agent instructions
-├── CLAUDE.md                # Claude guidance
-├── CHAT_START.md            # Bootstrap instructions
-└── .env                     # Configuration (contains PROJECT_ROOT_DIR and AgentRx vars)
-└── .venv                    # Python virtual environment for local installation/development
-```
-### ARX_AGENT_TOOLS
-Common Tools and Assets for Agentic Development
-See [ARX_AGENT_TOOLS](../docs/README.md#arx_agent_tools)
 
-### ARX_DOCS_OUT`
-Where AgentRx-generated documentation and development artifacts are output. See [agentrx Docs](_agents/agentrx/PROJECT_DOCS.md)
+`init-arx.sh` will:
+- Activate `.venv` / `venv` in the project root
+- `pip install` the `arx` CLI from `$AGENTRX_SOURCE/cli`
+- Prompt for directory layout using **readline tab-completion** (Tab to complete paths)
+- Optionally show a `--dry-run` preview before making changes
+- Call `arx init` with the resolved values
+
+### Copy mode vs link mode
+
+| Mode | How it works | When to use |
+|---|---|---|
+| `copy` (default) | Files are copied from `templates/_arx_agent_tools/` into `ARX_AGENT_TOOLS` | Most projects; files travel with the project |
+| `--link-arx` | Skeleton dirs created; each `agentrx/` leaf is a symlink back to source | Active AgentRx development; always see latest commands |
+
+### `arx init` directory rules
+
+| Directory | Exists | Result |
+|---|---|---|
+| `ARX_AGENT_TOOLS` | yes | Left untouched |
+| `ARX_AGENT_TOOLS` | no (copy) | Created; populated from `templates/_arx_agent_tools/` |
+| `ARX_AGENT_TOOLS` | no (`--link-arx`) | Skeleton created; `agentrx/` leaves symlinked to source |
+| `ARX_TARGET_PROJ` | no | Created (with `src/` inside) |
+| `ARX_DOCS_OUT` | no | Created (with `deltas/`, `vibes/`, `history/`) |
+
+Root files (`AGENTS.md`, `CLAUDE.md`, `CHAT_START.md`) are written only if absent.
+`.env` is always written/updated.
+
+---
+
+## CLI Reference
+
+See [`cli/README.md`](../cli/README.md) for the full CLI reference including all `arx init` options, `arx prompt` usage, and virtual environment setup.
+
+---
+
+## Architecture Notes
+
+- **`bin/init-arx.sh`** is the primary user-facing entry point. It is a thin shell wrapper that handles interactive prompting (where shell readline gives free tab-completion) and delegates all file operations to the Python CLI.
+- **`arx init`** is the file-operations engine. It is intentionally non-interactive — all configuration comes via flags or environment variables, making it scriptable and CI-friendly.
+- **`arx prompt`** works with `.md` prompt files in `ARX_DOCS_OUT/vibes/`. Prompt content can reference environment variables (`$VAR`) which are expanded on output.
+- **Templates** in `templates/_arx_agent_tools/` are the canonical source of all agent assets. In copy mode they are duplicated into the project; in link mode the project symlinks directly to them.
 
 
