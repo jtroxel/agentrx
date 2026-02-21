@@ -121,7 +121,7 @@ AGENT_SUBDIRS = ["commands", "skills", "scripts", "hooks", "agents"]
 
 # Name of the agents-tools template subdir inside templates/
 # This subtree is routed to ARX_AGENT_TOOLS instead of the project root.
-AGENTS_TEMPLATE_SUBDIR = "_arx_agent_tools"
+AGENTS_TEMPLATE_SUBDIR = "_arx_agent_tools.arx"
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +287,15 @@ def _is_junk(rel: Path) -> bool:
         or rel.suffix in _JUNK_SUFFIXES
         or any(p in _JUNK_DIRS for p in rel.parts)
     )
+
+
+def _strip_arx_marker(name: str) -> str:
+    """Strip the ``.ARX.`` or ``.arx.`` marker from a template filename.
+
+    e.g. ``AGENTS.ARX.md`` → ``AGENTS.md``
+         ``context.arx.yaml`` → ``context.yaml``
+    """
+    return name.replace(".ARX.", ".").replace(".arx.", ".")
 
 
 class _Runner:
@@ -575,10 +584,20 @@ def _copy_templates(root: Path, agents_path: Path,
         rel = item.relative_to(templates_dir)
         if _is_junk(rel):
             continue
+        in_agents_subdir = rel.parts[0] == AGENTS_TEMPLATE_SUBDIR
         # In link mode, skip the agents subtree — it is already symlinked
-        if link_arx and rel.parts[0] == AGENTS_TEMPLATE_SUBDIR:
+        if link_arx and in_agents_subdir:
+            continue
+        # Root-level files must carry the .ARX. / .arx. marker to be installed;
+        # bare files (e.g. README.md) are templates-dir documentation only.
+        if not in_agents_subdir and ".ARX." not in rel.name and ".arx." not in rel.name:
             continue
         dst_base, rel_in_dst = _route_template(rel, root, agents_path, AGENTS_TEMPLATE_SUBDIR)
+        # Strip .ARX. / .arx. marker from root-level template destination filenames
+        if not in_agents_subdir:
+            stripped_name = _strip_arx_marker(rel_in_dst.name)
+            if stripped_name != rel_in_dst.name:
+                rel_in_dst = rel_in_dst.parent / stripped_name
         dst = dst_base / rel_in_dst
         if dst.parent != dst_base and not dst.parent.exists():
             runner.mkdir(dst.parent)
@@ -641,7 +660,8 @@ def init(
 
     \b
     A .env is always written/updated in TARGET_DIR with the four ARX_* variables.
-    Root files (AGENTS.md, CLAUDE.md, CHAT_START.md) are written only if absent.
+    Root-level *.ARX.* templates are installed (with .ARX. stripped) only if absent.
+    CLAUDE.md and CHAT_START.md are written from built-in defaults only if absent.
 
     \b
     Examples:
@@ -765,10 +785,12 @@ def _run_init(
     _copy_templates(root, agents_path, agentrx_source, context, runner, link_arx=link_arx)
 
     # ── root bootstrap files ──────────────────────────────────────────────────
+    # AGENTS.md is installed by _copy_templates (from templates/AGENTS.ARX.md).
+    # CLAUDE.md and CHAT_START.md have no .ARX. template counterpart yet; write
+    # from inline defaults only if absent.
     click.echo()
     click.secho("Bootstrap files:", fg="cyan")
     for fname, content in [
-        ("AGENTS.md", AGENTS_MD_TEMPLATE),
         ("CLAUDE.md", CLAUDE_MD_TEMPLATE),
         ("CHAT_START.md", CHAT_START_TEMPLATE),
     ]:
