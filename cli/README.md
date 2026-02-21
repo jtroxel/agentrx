@@ -88,13 +88,13 @@ arx init \
 | State | Mode | Result |
 |---|---|---|
 | `ARX_AGENT_TOOLS` exists | any | Left untouched. |
-| `ARX_AGENT_TOOLS` missing | copy | Created; files copied from `AGENTRX_SOURCE/templates/_arx_agent_tools/`. |
+| `ARX_AGENT_TOOLS` missing | copy | Created; files copied from `AGENTRX_SOURCE/templates/_arx_agent_tools.arx/`. |
 | `ARX_AGENT_TOOLS` missing | `--link-arx` | Skeleton dirs created; each `agentrx/` leaf symlinked to source. |
 | `ARX_TARGET_PROJ` missing | any | Created (with `src/` inside). |
 | `ARX_DOCS_OUT` missing | any | Created (with `deltas/`, `vibes/`, `history/`). |
 
 ### Root files written
-`AGENTS.md`, `CLAUDE.md`, `CHAT_START.md` — written only if absent.
+Root-level `*.ARX.*` templates from `templates/` are installed with the `.ARX.` segment stripped (e.g. `AGENTS.ARX.md` → `AGENTS.md`). Each file is written only if absent.
 
 ### `.env`
 Always written/updated with the four `ARX_*` variables.

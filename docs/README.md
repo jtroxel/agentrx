@@ -15,26 +15,28 @@ Drop AgentRx into any project and incrementally ratchet up your agentic coding p
 ## Directory Structure
 
 ```
-agentrx-src/                 # AGENTRX_SOURCE — clone this once, point projects at it
+agentrx-src/                      # AGENTRX_SOURCE — clone once, point projects at it
 ├── bin/
-│   └── init-arx.sh          # Interactive shell initializer (primary entry point)
+│   └── init-arx.sh               # Interactive shell initializer (primary entry point)
 ├── cli/
 │   ├── agentrx/
-│   │   ├── cli.py           # arx entry point
+│   │   ├── cli.py                # arx entry point
 │   │   └── commands/
-│   │       ├── init.py      # arx init — file operations engine
-│   │       └── prompt.py    # arx prompt do/new/list
-│   └── README.md            # CLI quickstart and full option reference
+│   │       ├── init.py           # arx init — file operations engine
+│   │       └── prompt.py         # arx prompt do/new/list
+│   └── README.md                 # CLI quickstart and full option reference
 ├── templates/
-│   ├── _arx_agent_tools/    # Copied/linked into ARX_AGENT_TOOLS on init
+│   ├── AGENTS.ARX.md             # → $ARX_PROJECT_ROOT/AGENTS.md
+│   ├── AGENT_TOOLS.ARX.md        # → $ARX_PROJECT_ROOT/AGENT_TOOLS.md
+│   ├── _arx_agent_tools.arx/     # → $ARX_AGENT_TOOLS/ (copy or link)
 │   │   ├── commands/agentrx/
 │   │   ├── skills/agentrx/
 │   │   ├── scripts/agentrx/
 │   │   ├── hooks/agentrx/
 │   │   └── agents/
-│   └── *.md                 # Root-level bootstrap templates
+│   └── README.md                 # Templates directory documentation
 └── docs/
-    └── README.md            # ← you are here
+    └── README.md                 # ← you are here
 ```
 
 ### Initialized project layout
@@ -102,20 +104,36 @@ $AGENTRX_SOURCE/bin/init-arx.sh .
 
 | Mode | How it works | When to use |
 |---|---|---|
-| `copy` (default) | Files are copied from `templates/_arx_agent_tools/` into `ARX_AGENT_TOOLS` | Most projects; files travel with the project |
+| `copy` (default) | Files copied from `templates/`; `*.ARX.*` names stripped to plain names | Most projects; files travel with the project |
 | `--link-arx` | Skeleton dirs created; each `agentrx/` leaf is a symlink back to source | Active AgentRx development; always see latest commands |
+
+### Template naming convention
+
+Source files in `templates/` use an `.ARX.` marker in the filename to identify them as AgentRx-managed templates:
+
+- **Pattern:** `*.ARX.*` and `*.arx.*`
+- **Installed name:** the `.ARX.` segment is stripped — e.g. `AGENTS.ARX.md` → `AGENTS.md`
+- **Root-level templates** (`templates/*.ARX.*`) install into `$ARX_PROJECT_ROOT`
+- **Agent-tools templates** (`templates/_arx_agent_tools.arx/**`) install into `$ARX_AGENT_TOOLS`
+
+#### Conflict handling
+
+| Mode | Target exists | Action |
+|---|---|---|
+| copy | file exists | Merge contents into existing file |
+| link | path exists | Create symlink named `<base>.ARX.<ext>` (append numeric suffix if still conflicts) |
 
 ### `arx init` directory rules
 
 | Directory | Exists | Result |
 |---|---|---|
 | `ARX_AGENT_TOOLS` | yes | Left untouched |
-| `ARX_AGENT_TOOLS` | no (copy) | Created; populated from `templates/_arx_agent_tools/` |
+| `ARX_AGENT_TOOLS` | no (copy) | Created; populated from `templates/_arx_agent_tools.arx/`. |
 | `ARX_AGENT_TOOLS` | no (`--link-arx`) | Skeleton created; `agentrx/` leaves symlinked to source |
 | `ARX_TARGET_PROJ` | no | Created (with `src/` inside) |
 | `ARX_DOCS_OUT` | no | Created (with `deltas/`, `vibes/`, `history/`) |
 
-Root files (`AGENTS.md`, `CLAUDE.md`, `CHAT_START.md`) are written only if absent.
+Root-level `*.ARX.*` templates are installed (`.ARX.` stripped) only if absent.
 `.env` is always written/updated.
 
 ---
@@ -131,6 +149,6 @@ See [`cli/README.md`](../cli/README.md) for the full CLI reference including all
 - **`bin/init-arx.sh`** is the primary user-facing entry point. It is a thin shell wrapper that handles interactive prompting (where shell readline gives free tab-completion) and delegates all file operations to the Python CLI.
 - **`arx init`** is the file-operations engine. It is intentionally non-interactive — all configuration comes via flags or environment variables, making it scriptable and CI-friendly.
 - **`arx prompt`** works with `.md` prompt files in `ARX_DOCS_OUT/vibes/`. Prompt content can reference environment variables (`$VAR`) which are expanded on output.
-- **Templates** in `templates/_arx_agent_tools/` are the canonical source of all agent assets. In copy mode they are duplicated into the project; in link mode the project symlinks directly to them.
+- **Templates** in `templates/_arx_agent_tools.arx/` are the canonical source of all agent assets. In copy mode they are duplicated into the project; in link mode the project symlinks directly to them.
 
 
