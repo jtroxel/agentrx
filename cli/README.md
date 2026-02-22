@@ -34,7 +34,8 @@ The script will:
 3. Prompt for directory layout with **readline tab-completion** and glob expansion:
    - `ARX_AGENT_TOOLS` — agent assets dir (default: `_agents`)
    - `ARX_TARGET_PROJ` — target project dir (default: `_project`)
-   - `ARX_DOCS_OUT`    — docs output dir (default: `_project/docs/agentrx`)
+   - `ARX_PROJ_DOCS` — project docs dir (default: `_project/docs`)
+   - `ARX_WORK_DOCS`    — working docs dir (default: `_project/docs/agentrx`)
    - Mode: `copy` (default) or `link-arx`
 4. Optionally run a `--dry-run` preview first
 5. Call `arx init` with the resolved values to do the actual work
@@ -63,7 +64,8 @@ arx init \
   --agentrx-source $AGENTRX_SOURCE \
   --agents-dir _agents \
   --target-proj _project \
-  --docs-out _project/docs/agentrx \
+  --proj-docs _project/docs \
+  --work-docs _project/docs/agentrx \
   /path/to/project
 ```
 
@@ -77,7 +79,8 @@ arx init \
 | `AGENTRX_SOURCE` | `--agentrx-source` | _(none)_ | AgentRx source directory. Required for `--link-arx`; optional for copy. |
 | `ARX_AGENT_TOOLS` | `--agents-dir` | `_agents` | Agent assets directory. |
 | `ARX_TARGET_PROJ` | `--target-proj` | `_project` | Target project directory. |
-| `ARX_DOCS_OUT` | `--docs-out` | `_project/docs/agentrx` | Docs output directory. |
+| `ARX_PROJ_DOCS` | `--proj-docs` | `_project/docs` | Project documentation directory. |
+| `ARX_WORK_DOCS` | `--work-docs` | `_project/docs/agentrx` | Working docs from AgentRx development (vibes, deltas, history). |
 
 ---
 
@@ -91,13 +94,14 @@ arx init \
 | `ARX_AGENT_TOOLS` missing | copy | Created; files copied from `AGENTRX_SOURCE/templates/_arx_agent_tools.arx/`. |
 | `ARX_AGENT_TOOLS` missing | `--link-arx` | Skeleton dirs created; each `agentrx/` leaf symlinked to source. |
 | `ARX_TARGET_PROJ` missing | any | Created (with `src/` inside). |
-| `ARX_DOCS_OUT` missing | any | Created (with `deltas/`, `vibes/`, `history/`). |
+| `ARX_PROJ_DOCS` missing | any | Created. |
+| `ARX_WORK_DOCS` missing | any | Created (with `deltas/`, `vibes/`, `history/`). |
 
 ### Root files written
 Root-level `*.ARX.*` templates from `templates/` are installed with the `.ARX.` segment stripped (e.g. `AGENTS.ARX.md` → `AGENTS.md`). Each file is written only if absent.
 
 ### `.env`
-Always written/updated with the four `ARX_*` variables.
+Always written/updated with the six `ARX_*` variables.
 
 ### All options
 
@@ -108,7 +112,8 @@ arx init [OPTIONS] [TARGET_DIR]
       --agentrx-source   AgentRx source dir (env: AGENTRX_SOURCE).
       --agents-dir       Agent tools dir    (env: ARX_AGENT_TOOLS, default: _agents).
       --target-proj      Target project dir (env: ARX_TARGET_PROJ, default: _project).
-      --docs-out         Docs output dir    (env: ARX_DOCS_OUT).
+      --proj-docs        Project docs dir   (env: ARX_PROJ_DOCS,   default: _project/docs).
+      --work-docs        Working docs dir   (env: ARX_WORK_DOCS,   default: _project/docs/agentrx).
       --data             YAML file with extra template variables, or '-' for stdin.
   -v, --verbose          Show detailed output.
       --dry-run          Preview actions without making changes.

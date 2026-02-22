@@ -2,9 +2,9 @@
 ## *Home for detailed documentation on the target project, including setup instructions, architecture overview.*
 
 ## Project Docs Structure
-
+### AgentRx Project Docs
 ```
-PROJECT_
+$ARX_TARGET_DOCS/
 └── Product.md      # High-level product vision, core value proposition, and feature overview
 └── Architecture.md   # System architecture, component interactions, and design decisions
 └── features/
@@ -14,10 +14,16 @@ PROJECT_
     └── component_descriptions.md  # Detailed descriptions of each 
     └── capabilities/
         ├── task_orchestration.md  # (Example)Core logic for managing task lifecycle, status transitions, and error handling
+```
+Note: the init process allows the user to define the document root ($ARX_PROJ_DOCS) for project documentation... The could be a directory in the 
+
+### AgentRx Work[ing] Docs
+```
+$ARX_WORK_DOCS/
 └── agentrx                         # AI-assisted development artifacts (note below). 
     ├── deltas
     ├── history
     └── vibes
-Note `agentrx` allows the user to define the document root (${AGENTRX_DOC_ROOT}) for this content, it could be anywhere on the filesystem. --- IGNORE ---. Since this project is for development of agentrx itself, we are keeping the artifacts in a subdirectory here for easy access, but in a typical use case this could be outside the project repo.
 ```
+
 The `agentrx` directory contains all files generated during an AI-assisted development process using AgentRX tooling. This includes saved prompts and specifications used during development. This allows for easy reference and traceability of the development process.

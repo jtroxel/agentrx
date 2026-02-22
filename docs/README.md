@@ -11,6 +11,21 @@ Drop AgentRx into any project and incrementally ratchet up your agentic coding p
 3. Grow into multi-agent workflows: simple "Ralph" loops → complex parallel "Jack-Jack" splits.
 
 ---
+## Environment Variables
+
+When "installed" in a project, AgentRx sets up and uses several environment variables to locate its source, project root, and documentation directories.
+
+| Variable | CLI flag | Default | Description |
+|---|---|---|---|
+| `AGENTRX_SOURCE` | `--agentrx-source` | _(none)_ | Path to the `agentrx-src` clone. Required for `--link-arx`; optional for copy. |
+| `ARX_PROJECT_ROOT` | _(positional)_ | CWD | Project root. Always set to wherever `arx init` runs. |
+| `ARX_AGENT_TOOLS` | `--agents-dir` | `$ARX_PROJECT_ROOT/_agents` | Agent assets directory. |
+| `ARX_TARGET_PROJ` | `--target-proj` | `$ARX_PROJECT_ROOT/_project` | Target project (source code) directory. |
+| `ARX_PROJ_DOCS` | `--proj-docs` | `$ARX_TARGET_PROJ/docs` | Up-to-date project documentation for the target project. |
+| `ARX_WORK_DOCS` | `--work-docs` | `$ARX_PROJ_DOCS/agentrx` | "Working" documents from AgentRx agentic development (vibes, deltas, history). |
+
+---
+
 
 ## Directory Structure
 
@@ -36,7 +51,7 @@ agentrx-src/                      # AGENTRX_SOURCE — clone once, point project
 │   │   └── agents/
 │   └── README.md                 # Templates directory documentation
 └── docs/
-    └── README.md                 # ← you are here
+    └── README.md                 # ← you are here, these are up-to-date project docs for  AgentRx.
 ```
 
 ### Initialized project layout
@@ -52,27 +67,16 @@ After `arx init`, a target project looks like:
 │   ├── hooks/agentrx/
 │   └── agents/
 ├── _project/                # ARX_TARGET_PROJ  — your source code lives here
-│   └── docs/agentrx/        # ARX_DOCS_OUT     — generated docs and vibes
-│       ├── deltas/
-│       ├── vibes/
-│       └── history/
+│   └── docs/                # ARX_PROJ_DOCS    — project documentation
+│       └── agentrx/         # ARX_WORK_DOCS    — generated docs and vibes
+│           ├── deltas/
+│           ├── vibes/
+│           └── history/
 ├── AGENTS.md                # Agent startup instructions
 ├── CLAUDE.md                # Claude Code guidance
 ├── CHAT_START.md            # Session bootstrap
 └── .env                     # ARX_* variables, sourced by shell / arx commands
 ```
-
----
-
-## Environment Variables
-
-| Variable | CLI flag | Default | Description |
-|---|---|---|---|
-| `AGENTRX_SOURCE` | `--agentrx-source` | _(none)_ | Path to the `agentrx-src` clone. Required for `--link-arx`; optional for copy. |
-| `ARX_PROJECT_ROOT` | _(positional)_ | CWD | Project root. Always set to wherever `arx init` runs. |
-| `ARX_AGENT_TOOLS` | `--agents-dir` | `_agents` | Agent assets directory. |
-| `ARX_TARGET_PROJ` | `--target-proj` | `_project` | Target project (source code) directory. |
-| `ARX_DOCS_OUT` | `--docs-out` | `_project/docs/agentrx` | Documentation output directory. |
 
 ---
 
@@ -131,10 +135,11 @@ Source files in `templates/` use an `.ARX.` marker in the filename to identify t
 | `ARX_AGENT_TOOLS` | no (copy) | Created; populated from `templates/_arx_agent_tools.arx/`. |
 | `ARX_AGENT_TOOLS` | no (`--link-arx`) | Skeleton created; `agentrx/` leaves symlinked to source |
 | `ARX_TARGET_PROJ` | no | Created (with `src/` inside) |
-| `ARX_DOCS_OUT` | no | Created (with `deltas/`, `vibes/`, `history/`) |
+| `ARX_PROJ_DOCS` | no | Created |
+| `ARX_WORK_DOCS` | no | Created (with `deltas/`, `vibes/`, `history/`) |
 
 Root-level `*.ARX.*` templates are installed (`.ARX.` stripped) only if absent.
-`.env` is always written/updated.
+`.env` is always written/updated with all six `ARX_*` variables.
 
 ---
 
@@ -148,7 +153,7 @@ See [`cli/README.md`](../cli/README.md) for the full CLI reference including all
 
 - **`bin/init-arx.sh`** is the primary user-facing entry point. It is a thin shell wrapper that handles interactive prompting (where shell readline gives free tab-completion) and delegates all file operations to the Python CLI.
 - **`arx init`** is the file-operations engine. It is intentionally non-interactive — all configuration comes via flags or environment variables, making it scriptable and CI-friendly.
-- **`arx prompt`** works with `.md` prompt files in `ARX_DOCS_OUT/vibes/`. Prompt content can reference environment variables (`$VAR`) which are expanded on output.
+- **`arx prompt`** works with `.md` prompt files in `ARX_WORK_DOCS/vibes/`. Prompt content can reference environment variables (`$VAR`) which are expanded on output.
 - **Templates** in `templates/_arx_agent_tools.arx/` are the canonical source of all agent assets. In copy mode they are duplicated into the project; in link mode the project symlinks directly to them.
 
 

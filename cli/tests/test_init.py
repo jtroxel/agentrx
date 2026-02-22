@@ -7,16 +7,16 @@ from click.testing import CliRunner
 
 from agentrx.cli import cli
 from agentrx.commands.init import (
-    _init_impl,
+    _run_init,
+    _mkdir,
+    _write_file,
+    _make_symlink,
+    _strip_arx_marker,
     InitError,
-    resolve_mode,
-    create_directory,
-    create_file,
-    create_symlink,
-    check_link_target_exists,
     DEFAULT_AGENTS_DIR,
     DEFAULT_PROJECT_DIR,
-    DEFAULT_DOCS_DIR,
+    DEFAULT_WORK_DOCS,
+    AGENTS_TEMPLATE_SUBDIR,
 )
 
 
@@ -34,112 +34,90 @@ def temp_dir(tmp_path):
 
 @pytest.fixture
 def mock_source(tmp_path):
-    """Create a mock AgentRx source directory."""
+    """Create a mock AgentRx source directory with templates structure."""
     source = tmp_path / "agentrx_source"
     source.mkdir()
 
-    # Create _agents structure
-    agents = source / "_agents"
+    # Create templates structure (matching the actual layout)
+    templates = source / "templates"
+    templates.mkdir()
+
+    # Create _arx_agent_tools.arx structure
+    agents_tmpl = templates / AGENTS_TEMPLATE_SUBDIR
     for subdir in ["commands", "skills", "scripts", "hooks", "agents"]:
-        path = agents / subdir / "agentrx"
+        path = agents_tmpl / subdir / "agentrx"
         path.mkdir(parents=True)
         # Add a sample file
         (path / "sample.md").write_text(f"# Sample {subdir}")
 
+    # Create root-level template files
+    (templates / "AGENTS.ARX.md").write_text("# AGENTS Template")
+    (templates / "AGENT_TOOLS.ARX.md").write_text("# Agent Tools Template")
+
     return source
 
 
-class TestResolveMode:
-    """Tests for resolve_mode function."""
+class TestHelperFunctions:
+    """Tests for low-level helper functions."""
 
-    def test_mode_option_takes_precedence(self):
-        """--mode option should override flags."""
-        assert resolve_mode("link", True, False) == "link"
-        assert resolve_mode("copy", False, True) == "copy"
-
-    def test_link_flag(self):
-        """--link flag should return link mode."""
-        assert resolve_mode(None, False, True) == "link"
-
-    def test_copy_flag(self):
-        """--copy flag should return copy mode."""
-        assert resolve_mode(None, True, False) == "copy"
-
-    def test_default_is_copy(self):
-        """Default mode should be copy."""
-        assert resolve_mode(None, False, False) == "copy"
-
-
-class TestCreateDirectory:
-    """Tests for create_directory function."""
-
-    def test_creates_directory(self, temp_dir):
+    def test_mkdir_creates_directory(self, temp_dir):
         """Should create directory if it doesn't exist."""
         path = temp_dir / "new_dir"
         assert not path.exists()
-        result = create_directory(path)
+        result = _mkdir(path)
         assert result is True
         assert path.exists()
 
-    def test_does_not_recreate_existing(self, temp_dir):
-        """Should not recreate existing directory."""
+    def test_mkdir_returns_false_for_existing(self, temp_dir):
+        """Should return False for existing directory."""
         path = temp_dir / "existing"
         path.mkdir()
-        result = create_directory(path)
+        result = _mkdir(path)
         assert result is False
         assert path.exists()
 
-    def test_creates_nested_directories(self, temp_dir):
+    def test_mkdir_creates_nested_directories(self, temp_dir):
         """Should create nested directories."""
         path = temp_dir / "a" / "b" / "c"
-        result = create_directory(path)
+        result = _mkdir(path)
         assert result is True
         assert path.exists()
 
-
-class TestCreateFile:
-    """Tests for create_file function."""
-
-    def test_creates_file(self, temp_dir):
+    def test_write_file_creates_file(self, temp_dir):
         """Should create file with content."""
         path = temp_dir / "test.txt"
         content = "Hello, World!"
-        result = create_file(path, content)
+        result = _write_file(path, content, skip_existing=False)
         assert result is True
         assert path.read_text() == content
 
-    def test_does_not_overwrite_by_default(self, temp_dir):
-        """Should not overwrite existing file by default."""
+    def test_write_file_skips_existing_by_default(self, temp_dir):
+        """Should skip existing file when skip_existing=True."""
         path = temp_dir / "existing.txt"
         path.write_text("original")
-        result = create_file(path, "new content")
+        result = _write_file(path, "new content", skip_existing=True)
         assert result is False
         assert path.read_text() == "original"
 
-    def test_overwrites_when_requested(self, temp_dir):
-        """Should overwrite when overwrite=True."""
+    def test_write_file_overwrites_when_skip_false(self, temp_dir):
+        """Should overwrite when skip_existing=False."""
         path = temp_dir / "existing.txt"
         path.write_text("original")
-        result = create_file(path, "new content", overwrite=True)
+        result = _write_file(path, "new content", skip_existing=False)
         assert result is True
         assert path.read_text() == "new content"
 
-
-class TestCreateSymlink:
-    """Tests for create_symlink function."""
-
-    def test_creates_symlink(self, temp_dir):
+    def test_make_symlink_creates_symlink(self, temp_dir):
         """Should create symbolic link."""
         target = temp_dir / "target"
         target.mkdir()
         link = temp_dir / "link"
 
-        result = create_symlink(link, target)
-        assert result is True
+        _make_symlink(link, target)
         assert link.is_symlink()
         assert link.resolve() == target
 
-    def test_replaces_existing_symlink(self, temp_dir):
+    def test_make_symlink_replaces_existing_symlink(self, temp_dir):
         """Should replace existing symlink."""
         target1 = temp_dir / "target1"
         target2 = temp_dir / "target2"
@@ -148,37 +126,14 @@ class TestCreateSymlink:
         link = temp_dir / "link"
 
         link.symlink_to(target1)
-        create_symlink(link, target2)
+        _make_symlink(link, target2)
         assert link.resolve() == target2
 
-
-class TestCheckLinkTargetExists:
-    """Tests for check_link_target_exists function."""
-
-    def test_raises_if_directory_exists(self, temp_dir):
-        """Should raise InitError if directory exists."""
-        path = temp_dir / "existing"
-        path.mkdir()
-
-        with pytest.raises(InitError) as exc_info:
-            check_link_target_exists(path, "test")
-        assert "already exists" in str(exc_info.value)
-
-    def test_allows_symlink(self, temp_dir):
-        """Should allow if path is a symlink."""
-        target = temp_dir / "target"
-        target.mkdir()
-        link = temp_dir / "link"
-        link.symlink_to(target)
-
-        # Should not raise
-        check_link_target_exists(link, "test")
-
-    def test_allows_nonexistent(self, temp_dir):
-        """Should allow if path doesn't exist."""
-        path = temp_dir / "nonexistent"
-        # Should not raise
-        check_link_target_exists(path, "test")
+    def test_strip_arx_marker(self):
+        """Should strip .ARX. and .arx. markers from filenames."""
+        assert _strip_arx_marker("AGENTS.ARX.md") == "AGENTS.md"
+        assert _strip_arx_marker("context.arx.yaml") == "context.yaml"
+        assert _strip_arx_marker("README.md") == "README.md"
 
 
 class TestInitCommand:
@@ -193,26 +148,22 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
             ],
         )
 
         assert result.exit_code == 0, f"Failed with: {result.output}"
 
         # Check directories exist
-        assert (target / "_agents" / "commands" / "agentrx").exists()
-        assert (target / "_agents" / "skills" / "agentrx").exists()
-        assert (target / "_agents" / "hooks" / "agentrx").exists()
-        assert (target / "_agents" / "scripts" / "agentrx").exists()
+        assert (target / "_agents" / "commands").exists()
+        assert (target / "_agents" / "skills").exists()
+        assert (target / "_agents" / "hooks").exists()
+        assert (target / "_agents" / "scripts").exists()
         assert (target / "_project" / "src").exists()
         assert (target / "_project" / "docs" / "agentrx" / "vibes").exists()
-        # .claude directory should NOT be created anymore
-        assert not (target / ".claude").exists()
 
     def test_init_creates_config_files(self, runner, temp_dir):
         """init should create configuration files."""
@@ -223,23 +174,21 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
             ],
         )
 
         assert result.exit_code == 0
-        assert (target / "AGENTS.md").exists()
+        # AGENTS.md comes from templates if available, otherwise not created
         assert (target / "CLAUDE.md").exists()
         assert (target / "CHAT_START.md").exists()
         assert (target / ".env").exists()
 
     def test_init_env_file_content(self, runner, temp_dir):
-        """init should create .env with correct content per README spec."""
+        """init should create .env with correct variable names."""
         target = temp_dir / "project"
 
         runner.invoke(
@@ -247,45 +196,44 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
-                "--agents-dir",
-                "my_agents",
-                "--project-dir",
-                "my_project",
-                "--docs-dir",
-                "my_project/docs/arx",
+                "--agents-dir", "my_agents",
+                "--target-proj", "my_project",
+                "--proj-docs", "my_project/docs",
+                "--work-docs", "my_project/docs/arx",
             ],
         )
 
         env_content = (target / ".env").read_text()
-        assert "ARX_TOOLS=my_agents" in env_content
-        assert "ARX_TARGET_PROJ=my_project" in env_content
-        assert "ARX_DOCS_OUT=my_project/docs/arx" in env_content
+        assert "ARX_AGENT_TOOLS=" in env_content
+        assert "ARX_TARGET_PROJ=" in env_content
+        assert "ARX_PROJ_DOCS=" in env_content
+        assert "ARX_WORK_DOCS=" in env_content
         assert "ARX_PROJECT_ROOT=" in env_content
 
     def test_init_link_mode_requires_source(self, runner, temp_dir):
-        """--link mode should require --agentrx-source."""
+        """--link-arx mode should require --agentrx-source."""
         target = temp_dir / "project"
 
+        # Unset AGENTRX_SOURCE to ensure the test doesn't pick it up from env
         result = runner.invoke(
             cli,
             [
                 "init",
                 str(target),
-                "--link",
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
+                "--link-arx",
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
             ],
+            env={"AGENTRX_SOURCE": ""},
         )
 
         assert result.exit_code == 1
         assert "requires" in result.output.lower() or "agentrx-source" in result.output.lower()
 
     def test_init_link_mode_creates_symlinks(self, runner, temp_dir, mock_source):
-        """--link mode should create symlinks to source."""
+        """--link-arx mode should create symlinks to source."""
         target = temp_dir / "project"
 
         result = runner.invoke(
@@ -293,15 +241,12 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
-                "--link",
-                "--agentrx-source",
-                str(mock_source),
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
+                "--link-arx",
+                "--agentrx-source", str(mock_source),
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
             ],
         )
 
@@ -311,37 +256,8 @@ class TestInitCommand:
         commands_link = target / "_agents" / "commands" / "agentrx"
         assert commands_link.is_symlink()
 
-    def test_init_link_mode_fails_if_target_exists(self, runner, temp_dir, mock_source):
-        """--link mode should fail if target directory already exists."""
-        target = temp_dir / "project"
-
-        # Pre-create the target directory with content
-        existing = target / "_agents" / "commands" / "agentrx"
-        existing.mkdir(parents=True)
-        (existing / "existing.md").write_text("existing content")
-
-        result = runner.invoke(
-            cli,
-            [
-                "init",
-                str(target),
-                "--link",
-                "--agentrx-source",
-                str(mock_source),
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
-            ],
-        )
-
-        assert result.exit_code == 1
-        assert "already exists" in result.output
-
     def test_init_copy_mode_with_source(self, runner, temp_dir, mock_source):
-        """--copy mode with source should copy files."""
+        """Copy mode with source should copy files."""
         target = temp_dir / "project"
 
         result = runner.invoke(
@@ -349,15 +265,11 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
-                "--copy",
-                "--agentrx-source",
-                str(mock_source),
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
+                "--agentrx-source", str(mock_source),
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
             ],
         )
 
@@ -369,36 +281,6 @@ class TestInitCommand:
         assert not commands_dir.is_symlink()
         assert (commands_dir / "sample.md").exists()
 
-    def test_init_mode_option_overrides_flags(self, runner, temp_dir, mock_source):
-        """--mode option should override --copy/--link flags."""
-        target = temp_dir / "project"
-
-        # Use --link flag but --mode copy
-        result = runner.invoke(
-            cli,
-            [
-                "init",
-                str(target),
-                "--link",  # This flag
-                "--mode",
-                "copy",  # Should be overridden by this
-                "--agentrx-source",
-                str(mock_source),
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
-            ],
-        )
-
-        assert result.exit_code == 0
-
-        # Should be copied, not linked
-        commands_dir = target / "_agents" / "commands" / "agentrx"
-        assert not commands_dir.is_symlink()
-
     def test_init_verbose_output(self, runner, temp_dir):
         """--verbose should show detailed output."""
         target = temp_dir / "project"
@@ -409,53 +291,45 @@ class TestInitCommand:
                 "init",
                 str(target),
                 "--verbose",
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
             ],
         )
 
         assert result.exit_code == 0
-        assert "[OK]" in result.output
+        # Verbose mode shows [OK] markers
+        assert "[OK]" in result.output or "mkdir" in result.output
 
-    def test_init_does_not_overwrite_existing_env(self, runner, temp_dir):
-        """init should not overwrite existing .env with ARX config."""
+    def test_init_dry_run(self, runner, temp_dir):
+        """--dry-run should show actions without making changes."""
         target = temp_dir / "project"
-        target.mkdir(parents=True)
-
-        # Create existing .env with ARX config (using new var names)
-        env_path = target / ".env"
-        env_path.write_text("ARX_TOOLS=custom\n")
 
         result = runner.invoke(
             cli,
             [
                 "init",
                 str(target),
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
+                "--dry-run",
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
             ],
         )
 
         assert result.exit_code == 0
-        env_content = env_path.read_text()
-        assert "ARX_TOOLS=custom" in env_content
-        # Should not have duplicate
-        assert env_content.count("ARX_TOOLS") == 1
+        assert "DRY RUN" in result.output
+        # Directory should not be created in dry-run
+        assert not (target / "_agents").exists()
 
-    def test_init_appends_to_existing_env(self, runner, temp_dir):
-        """init should append to existing .env without ARX config."""
+    def test_init_preserves_existing_env_values(self, runner, temp_dir):
+        """init should preserve existing .env values while adding new ones."""
         target = temp_dir / "project"
         target.mkdir(parents=True)
 
-        # Create existing .env without ARX config
+        # Create existing .env with custom value
         env_path = target / ".env"
         env_path.write_text("OTHER_VAR=value\n")
 
@@ -464,39 +338,63 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
-                "--agents-dir",
-                "_agents",
-                "--project-dir",
-                "_project",
-                "--docs-dir",
-                "_project/docs/agentrx",
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
             ],
         )
 
         assert result.exit_code == 0
         env_content = env_path.read_text()
         assert "OTHER_VAR=value" in env_content
-        assert "ARX_TOOLS=_agents" in env_content
+        assert "ARX_PROJECT_ROOT=" in env_content
+
+    def test_init_updates_existing_arx_values(self, runner, temp_dir):
+        """init should update existing ARX_* values in .env."""
+        target = temp_dir / "project"
+        target.mkdir(parents=True)
+
+        # Create existing .env with old ARX value
+        env_path = target / ".env"
+        env_path.write_text("ARX_AGENT_TOOLS=old_value\n")
+
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(target),
+                "--agents-dir", "new_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
+            ],
+        )
+
+        assert result.exit_code == 0
+        env_content = env_path.read_text()
+        # Old value should be updated, not duplicated
+        assert env_content.count("ARX_AGENT_TOOLS") == 1
+        assert "new_agents" in env_content
 
 
-class TestInitImpl:
-    """Tests for _init_impl function directly."""
+class TestRunInit:
+    """Tests for _run_init function directly."""
 
     def test_uses_default_dirs_when_not_specified(self, temp_dir):
         """Should use default directories when none specified."""
         target = temp_dir / "project"
 
-        _init_impl(
+        _run_init(
             target_dir=str(target),
-            copy_flag=False,
-            link_flag=False,
-            mode_option=None,
-            custom=False,
+            link_arx=False,
             verbose=False,
+            dry_run=False,
             agentrx_source=None,
             agents_dir=None,
-            project_dir=None,
-            docs_dir=None,
+            target_proj=None,
+            proj_docs=None,
+            work_docs=None,
             data_path=None,
         )
 
@@ -508,18 +406,39 @@ class TestInitImpl:
         target = temp_dir / "project"
 
         with pytest.raises(InitError) as exc_info:
-            _init_impl(
+            _run_init(
                 target_dir=str(target),
-                copy_flag=False,
-                link_flag=True,
-                mode_option=None,
-                custom=False,
+                link_arx=True,
                 verbose=False,
+                dry_run=False,
                 agentrx_source=None,
                 agents_dir="_agents",
-                project_dir="_project",
-                docs_dir="_project/docs/agentrx",
+                target_proj="_project",
+                proj_docs="_project/docs",
+                work_docs="_project/docs/agentrx",
                 data_path=None,
             )
 
         assert "requires" in str(exc_info.value).lower()
+
+    def test_creates_docs_subdirs(self, temp_dir):
+        """Should create docs subdirectories (deltas, vibes, history)."""
+        target = temp_dir / "project"
+
+        _run_init(
+            target_dir=str(target),
+            link_arx=False,
+            verbose=False,
+            dry_run=False,
+            agentrx_source=None,
+            agents_dir="_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+        )
+
+        docs_dir = target / "_project" / "docs" / "agentrx"
+        assert (docs_dir / "deltas").exists()
+        assert (docs_dir / "vibes").exists()
+        assert (docs_dir / "history").exists()

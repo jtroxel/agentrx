@@ -12,11 +12,11 @@ from agentrx.commands.prompt import (
     get_prompts_dir,
     get_history_dir,
     find_most_recent_prompt,
-    load_json_data,
     write_history_entry,
     PromptError,
     DEFAULT_PROMPTS_DIR,
 )
+from agentrx.render import build_context
 
 
 @pytest.fixture
@@ -102,46 +102,46 @@ class TestFindMostRecentPrompt:
         assert result.name == "newest_prompt.md"
 
 
-class TestLoadJsonData:
-    """Tests for load_json_data function."""
+class TestBuildContext:
+    """Tests for render.build_context (replaces load_json_data)."""
 
     def test_loads_from_file(self, tmp_path):
-        """Should load JSON from file."""
+        """Should load JSON from data_file."""
         data_file = tmp_path / "data.json"
         data_file.write_text('{"key": "value"}')
-        result = load_json_data(data_file, None)
+        result = build_context(data_file=str(data_file))
         assert result == {"key": "value"}
 
-    def test_loads_from_stdin(self):
-        """Should load JSON from stdin."""
-        result = load_json_data(None, '{"stdin": "data"}')
+    def test_loads_from_inline_json(self):
+        """Should load JSON from data_json inline string."""
+        result = build_context(data_json='{"stdin": "data"}')
         assert result == {"stdin": "data"}
 
-    def test_merges_file_and_stdin(self, tmp_path):
-        """Should merge file and stdin data, stdin takes precedence."""
+    def test_merges_file_and_inline_json(self, tmp_path):
+        """Inline JSON takes precedence over file."""
         data_file = tmp_path / "data.json"
         data_file.write_text('{"key": "file", "other": "value"}')
-        result = load_json_data(data_file, '{"key": "stdin"}')
-        assert result == {"key": "stdin", "other": "value"}
+        result = build_context(data_file=str(data_file), data_json='{"key": "inline"}')
+        assert result == {"key": "inline", "other": "value"}
 
     def test_raises_for_missing_file(self, tmp_path):
-        """Should raise PromptError for missing file."""
-        with pytest.raises(PromptError) as exc_info:
-            load_json_data(tmp_path / "nonexistent.json", None)
+        """Should raise ValueError for missing file."""
+        with pytest.raises(ValueError) as exc_info:
+            build_context(data_file=str(tmp_path / "nonexistent.json"))
         assert "not found" in str(exc_info.value)
 
     def test_raises_for_invalid_json_file(self, tmp_path):
-        """Should raise PromptError for invalid JSON in file."""
+        """Should raise ValueError for invalid JSON in file."""
         data_file = tmp_path / "invalid.json"
         data_file.write_text("not valid json")
-        with pytest.raises(PromptError) as exc_info:
-            load_json_data(data_file, None)
+        with pytest.raises(ValueError) as exc_info:
+            build_context(data_file=str(data_file))
         assert "Invalid JSON" in str(exc_info.value)
 
-    def test_raises_for_invalid_json_stdin(self):
-        """Should raise PromptError for invalid JSON from stdin."""
-        with pytest.raises(PromptError) as exc_info:
-            load_json_data(None, "not valid json")
+    def test_raises_for_invalid_inline_json(self):
+        """Should raise ValueError for invalid inline JSON."""
+        with pytest.raises(ValueError) as exc_info:
+            build_context(data_json="not valid json")
         assert "Invalid JSON" in str(exc_info.value)
 
 
@@ -205,9 +205,9 @@ class TestPromptDoCommand:
         assert "newest_prompt" in result.output
 
     def test_do_with_data_file(self, runner, temp_prompts_dir, tmp_path):
-        """Should include data from file."""
+        """Should render template with data from file."""
         prompt_file = temp_prompts_dir / "test.md"
-        prompt_file.write_text("# Test with data")
+        prompt_file.write_text("Hello <ARX [[user]] />!")
 
         data_file = tmp_path / "data.json"
         data_file.write_text('{"user": "alice"}')

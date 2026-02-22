@@ -6,6 +6,7 @@ from pathlib import Path
 from . import __version__
 from .commands.init import init
 from .commands.prompt import prompt
+from .commands.setup import setup
 
 
 @click.group()
@@ -22,6 +23,7 @@ def cli(ctx):
 # Register commands
 cli.add_command(init)
 cli.add_command(prompt)
+cli.add_command(setup)
 
 
 def main():

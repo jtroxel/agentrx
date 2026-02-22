@@ -6,7 +6,8 @@ Environment variables (written to .env, read as defaults):
   ARX_PROJECT_ROOT   Root directory of the host project (always = CWD / target_dir).
   ARX_AGENT_TOOLS    Agent assets directory (default: $ARX_PROJECT_ROOT/_agents/).
   ARX_TARGET_PROJ    Target project directory (default: $ARX_PROJECT_ROOT/_project/).
-  ARX_DOCS_OUT       Docs output directory (default: $ARX_TARGET_PROJ/docs/agentrx).
+  ARX_PROJ_DOCS      Project documentation directory (default: $ARX_TARGET_PROJ/docs).
+  ARX_WORK_DOCS      Working docs directory — vibes, deltas, history (default: $ARX_PROJ_DOCS/agentrx).
   AGENTRX_SOURCE     Source of AgentRx assets used with --link-arx or copy.
 """
 
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import click
+
+from agentrx.render import render as _arx_render
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +112,14 @@ After loading, output a confirmation listing available commands and skills.
 ENV_PROJECT_ROOT = "ARX_PROJECT_ROOT"
 ENV_AGENT_TOOLS  = "ARX_AGENT_TOOLS"
 ENV_TARGET_PROJ  = "ARX_TARGET_PROJ"
-ENV_DOCS_OUT     = "ARX_DOCS_OUT"
+ENV_PROJ_DOCS    = "ARX_PROJ_DOCS"
+ENV_WORK_DOCS    = "ARX_WORK_DOCS"
 
 # Default relative paths (relative to project root)
-DEFAULT_AGENTS_DIR = "_agents"
+DEFAULT_AGENTS_DIR  = "_agents"
 DEFAULT_PROJECT_DIR = "_project"
-DEFAULT_DOCS_DIR = "_project/docs/agentrx"
+DEFAULT_PROJ_DOCS   = "_project/docs"
+DEFAULT_WORK_DOCS   = "_project/docs/agentrx"
 
 # Sub-category names under the agent-tools directory
 AGENT_SUBDIRS = ["commands", "skills", "scripts", "hooks", "agents"]
@@ -253,9 +258,9 @@ def _load_yaml(path: Optional[str]) -> Dict[str, Any]:
     return dict(yaml.safe_load(raw) or {})
 
 
-def _safe_mustache_render(text: str, _context: Dict[str, Any]) -> str:
-    """Stub mustache renderer (no-op). ARX tokens preserved for agent processing."""
-    return text
+def _safe_mustache_render(text: str, context: Dict[str, Any]) -> str:
+    """Render ARX variable tags and env-var expansions in *text*."""
+    return _arx_render(text, context)
 
 
 def _find_templates_dir(agentrx_source: Optional[str]) -> Optional[Path]:
@@ -625,8 +630,10 @@ def _copy_templates(root: Path, agents_path: Path,
               help=f"Agent-tools dir.  Env: {ENV_AGENT_TOOLS}  [default: {DEFAULT_AGENTS_DIR}]")
 @click.option("--target-proj", "target_proj", envvar=ENV_TARGET_PROJ, type=str,
               help=f"Target project dir.  Env: {ENV_TARGET_PROJ}  [default: {DEFAULT_PROJECT_DIR}]")
-@click.option("--docs-out", "docs_out", envvar=ENV_DOCS_OUT, type=str,
-              help=f"Docs output dir.  Env: {ENV_DOCS_OUT}  [default: {DEFAULT_DOCS_DIR}]")
+@click.option("--proj-docs", "proj_docs", envvar=ENV_PROJ_DOCS, type=str,
+              help=f"Project docs dir.  Env: {ENV_PROJ_DOCS}  [default: {DEFAULT_PROJ_DOCS}]")
+@click.option("--work-docs", "work_docs", envvar=ENV_WORK_DOCS, type=str,
+              help=f"Working docs dir (vibes/deltas/history).  Env: {ENV_WORK_DOCS}  [default: {DEFAULT_WORK_DOCS}]")
 @click.option("--data", "data_path", type=str,
               help="YAML file with template variables, or '-' for stdin.")
 def init(
@@ -637,7 +644,8 @@ def init(
     agentrx_source: Optional[str],
     agents_dir: Optional[str],
     target_proj: Optional[str],
-    docs_out: Optional[str],
+    proj_docs: Optional[str],
+    work_docs: Optional[str],
     data_path: Optional[str],
 ) -> None:
     """Initialize an AgentRx project structure.
@@ -655,11 +663,13 @@ def init(
                                              Each agentrx/ subdir symlinked to source.
       ARX_TARGET_PROJ  exists -> left untouched.
       ARX_TARGET_PROJ  missing -> created (with src/ inside).
-      ARX_DOCS_OUT     exists -> left untouched.
-      ARX_DOCS_OUT     missing -> created (with deltas/, vibes/, history/).
+      ARX_PROJ_DOCS    exists -> left untouched.
+      ARX_PROJ_DOCS    missing -> created.
+      ARX_WORK_DOCS    exists -> left untouched.
+      ARX_WORK_DOCS    missing -> created (with deltas/, vibes/, history/).
 
     \b
-    A .env is always written/updated in TARGET_DIR with the four ARX_* variables.
+    A .env is always written/updated in TARGET_DIR with the five ARX_* variables.
     Root-level *.ARX.* templates are installed (with .ARX. stripped) only if absent.
     CLAUDE.md and CHAT_START.md are written from built-in defaults only if absent.
 
@@ -679,7 +689,8 @@ def init(
             agentrx_source=agentrx_source,
             agents_dir=agents_dir,
             target_proj=target_proj,
-            docs_out=docs_out,
+            proj_docs=proj_docs,
+            work_docs=work_docs,
             data_path=data_path,
         )
     except InitError as exc:
@@ -695,9 +706,10 @@ def _resolve_dirs(
     root: Path,
     agents_dir: Optional[str],
     target_proj: Optional[str],
-    docs_out: Optional[str],
+    proj_docs: Optional[str],
+    work_docs: Optional[str],
     interactive: bool,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path]:
     def _env(name: str, default: str) -> str:
         return os.environ.get(name, default)
 
@@ -711,19 +723,22 @@ def _resolve_dirs(
             f"  {ENV_TARGET_PROJ}",
             default=target_proj or _env(ENV_TARGET_PROJ, DEFAULT_PROJECT_DIR),
         )
-        d_default = docs_out or _env(ENV_DOCS_OUT, f"{p}/docs/agentrx")
-        d = click.prompt(f"  {ENV_DOCS_OUT}", default=d_default)
+        pd_default = proj_docs or _env(ENV_PROJ_DOCS, f"{p}/docs")
+        pd = click.prompt(f"  {ENV_PROJ_DOCS}", default=pd_default)
+        wd_default = work_docs or _env(ENV_WORK_DOCS, f"{pd}/agentrx")
+        wd = click.prompt(f"  {ENV_WORK_DOCS}", default=wd_default)
         click.echo()
     else:
-        a = agents_dir or _env(ENV_AGENT_TOOLS, DEFAULT_AGENTS_DIR)
-        p = target_proj or _env(ENV_TARGET_PROJ, DEFAULT_PROJECT_DIR)
-        d = docs_out or _env(ENV_DOCS_OUT, DEFAULT_DOCS_DIR)
+        a  = agents_dir  or _env(ENV_AGENT_TOOLS, DEFAULT_AGENTS_DIR)
+        p  = target_proj or _env(ENV_TARGET_PROJ,  DEFAULT_PROJECT_DIR)
+        pd = proj_docs   or _env(ENV_PROJ_DOCS,    DEFAULT_PROJ_DOCS)
+        wd = work_docs   or _env(ENV_WORK_DOCS,    DEFAULT_WORK_DOCS)
 
     def _abs(val: str, base: Path) -> Path:
         v = Path(val)
         return v if v.is_absolute() else base / v
 
-    return _abs(a, root), _abs(p, root), _abs(d, root)
+    return _abs(a, root), _abs(p, root), _abs(pd, root), _abs(wd, root)
 
 
 # ---------------------------------------------------------------------------
@@ -738,7 +753,8 @@ def _run_init(
     agentrx_source: Optional[str],
     agents_dir: Optional[str],
     target_proj: Optional[str],
-    docs_out: Optional[str],
+    proj_docs: Optional[str],
+    work_docs: Optional[str],
     data_path: Optional[str],
 ) -> None:
     root = Path(target_dir).resolve()
@@ -761,15 +777,17 @@ def _run_init(
         runner.mkdir(root)
 
     # ── resolve directory paths (may prompt interactively) ────────────────────
-    interactive = (agents_dir is None and target_proj is None and docs_out is None)
-    agents_path, proj_path, docs_path = _resolve_dirs(
-        root, agents_dir, target_proj, docs_out, interactive
+    interactive = (agents_dir is None and target_proj is None
+                   and proj_docs is None and work_docs is None)
+    agents_path, proj_path, proj_docs_path, work_docs_path = _resolve_dirs(
+        root, agents_dir, target_proj, proj_docs, work_docs, interactive
     )
 
     click.secho("Resolved paths:", fg="cyan")
     click.echo(f"  {ENV_AGENT_TOOLS:20s} = {agents_path}")
     click.echo(f"  {ENV_TARGET_PROJ:20s} = {proj_path}")
-    click.echo(f"  {ENV_DOCS_OUT:20s} = {docs_path}")
+    click.echo(f"  {ENV_PROJ_DOCS:20s} = {proj_docs_path}")
+    click.echo(f"  {ENV_WORK_DOCS:20s} = {work_docs_path}")
     click.echo()
 
     # ── load YAML template context ────────────────────────────────────────────
@@ -779,7 +797,8 @@ def _run_init(
     click.secho("Directories:", fg="cyan")
     _setup_agent_tools(agents_path, link_arx, agentrx_source, runner)
     _setup_project_dir(proj_path, runner)
-    _setup_docs_dir(docs_path, runner)
+    runner.mkdir(proj_docs_path)
+    _setup_docs_dir(work_docs_path, runner)
 
     # ── copy / process templates ──────────────────────────────────────────────
     _copy_templates(root, agents_path, agentrx_source, context, runner, link_arx=link_arx)
@@ -803,7 +822,8 @@ def _run_init(
         ENV_PROJECT_ROOT: str(root),
         ENV_AGENT_TOOLS:  str(agents_path),
         ENV_TARGET_PROJ:  str(proj_path),
-        ENV_DOCS_OUT:     str(docs_path),
+        ENV_PROJ_DOCS:    str(proj_docs_path),
+        ENV_WORK_DOCS:    str(work_docs_path),
     })
 
     # ── summary ───────────────────────────────────────────────────────────────

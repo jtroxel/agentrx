@@ -9,6 +9,8 @@ from typing import Optional
 
 import click
 
+from agentrx.render import build_context, read_stdin_if_available, render_file
+
 # Default directories
 DEFAULT_PROMPTS_DIR = "_project/docs/agentrx/vibes"
 DEFAULT_HISTORY_SUBDIR = "history"
@@ -46,43 +48,6 @@ def find_most_recent_prompt(prompts_dir: Path) -> Optional[Path]:
     md_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
     return md_files[0]
 
-
-def load_json_data(data_path: Optional[Path], stdin_data: Optional[str]) -> dict:
-    """Load and merge JSON data from file and/or stdin."""
-    result = {}
-
-    # Load from file if specified
-    if data_path:
-        if not data_path.exists():
-            raise PromptError(f"Data file not found: {data_path}")
-        try:
-            result = json.loads(data_path.read_text())
-        except json.JSONDecodeError as e:
-            raise PromptError(f"Invalid JSON in {data_path}: {e}")
-
-    # Load from stdin if available
-    if stdin_data:
-        try:
-            stdin_json = json.loads(stdin_data)
-            # Merge stdin data (stdin takes precedence)
-            if isinstance(stdin_json, dict) and isinstance(result, dict):
-                result.update(stdin_json)
-            else:
-                result = stdin_json
-        except json.JSONDecodeError as e:
-            raise PromptError(f"Invalid JSON from stdin: {e}")
-
-    return result
-
-
-def read_stdin_if_available() -> Optional[str]:
-    """Read stdin if data is being piped in."""
-    if sys.stdin.isatty():
-        return None
-    try:
-        return sys.stdin.read()
-    except Exception:
-        return None
 
 
 def write_history_entry(
@@ -125,7 +90,9 @@ def prompt():
 @prompt.command("do")
 @click.argument("prompt_file", required=False, type=click.Path())
 @click.option("-d", "--data", "data_file", type=click.Path(exists=True),
-              help="Path to JSON data file for context")
+              help="Path to JSON/YAML data file for context")
+@click.option("-D", "--data-json", "data_json",
+              help="Inline JSON string for context (merged with --data; highest priority)")
 @click.option("-H", "--history", is_flag=True,
               help="Append execution to history log")
 @click.option("-o", "--output", "output_file", type=click.Path(),
@@ -137,6 +104,7 @@ def prompt():
 def do_prompt(
     prompt_file: Optional[str],
     data_file: Optional[str],
+    data_json: Optional[str],
     history: bool,
     output_file: Optional[str],
     dry_run: bool,
@@ -147,16 +115,20 @@ def do_prompt(
     If PROMPT_FILE is not specified, uses the most recent .md file
     in the ARX_PROMPTS directory.
 
-    Data can be provided via --data file or piped through stdin.
-    When both are provided, they are merged (stdin takes precedence).
+    Data can be provided via --data file, --data-json inline string,
+    or piped through stdin.  When multiple sources are given they are
+    merged: file < --data-json < stdin (stdin wins).
 
     Examples:
 
         # Execute most recent prompt
         arx prompt do
 
-        # Execute specific prompt with data
+        # Execute specific prompt with data file
         arx prompt do my_prompt.md --data context.json
+
+        # Execute with inline JSON context
+        arx prompt do my_prompt.md --data-json '{"name": "Alice"}'
 
         # Pipe data from another command
         cat data.json | arx prompt do my_prompt.md
@@ -168,6 +140,7 @@ def do_prompt(
         _do_prompt_impl(
             prompt_file=prompt_file,
             data_file=data_file,
+            data_json=data_json,
             history=history,
             output_file=output_file,
             dry_run=dry_run,
@@ -178,9 +151,42 @@ def do_prompt(
         sys.exit(1)
 
 
+def _resolve_prompt_path(prompt_file: Optional[str], prompts_dir: Path) -> Path:
+    """Resolve prompt_file arg to an existing Path."""
+    if prompt_file:
+        p = Path(prompt_file)
+        if not p.is_absolute() and not p.exists():
+            candidate = prompts_dir / prompt_file
+            if candidate.exists():
+                return candidate
+        return p
+    if not prompts_dir.exists():
+        raise PromptError(
+            f"Prompts directory not found: {prompts_dir}\n"
+            "Set ARX_PROMPTS environment variable or specify a prompt file."
+        )
+    p = find_most_recent_prompt(prompts_dir)
+    if not p:
+        raise PromptError(f"No prompt files found in {prompts_dir}")
+    return p
+
+
+def _build_data_source_label(data_file: Optional[str], data_json: Optional[str], stdin: Optional[str]) -> Optional[str]:
+    """Human-readable label for where data came from."""
+    parts = []
+    if data_file:
+        parts.append(data_file)
+    if data_json:
+        parts.append("--data-json")
+    if stdin:
+        parts.append("stdin")
+    return " + ".join(parts) if parts else None
+
+
 def _do_prompt_impl(
     prompt_file: Optional[str],
     data_file: Optional[str],
+    data_json: Optional[str],
     history: bool,
     output_file: Optional[str],
     dry_run: bool,
@@ -188,62 +194,23 @@ def _do_prompt_impl(
 ) -> None:
     """Implementation of prompt do command."""
     prompts_dir = get_prompts_dir()
-
-    # Resolve prompt file
-    if prompt_file:
-        prompt_path = Path(prompt_file)
-        # If not absolute, check relative to prompts_dir first
-        if not prompt_path.is_absolute() and not prompt_path.exists():
-            candidate = prompts_dir / prompt_file
-            if candidate.exists():
-                prompt_path = candidate
-    else:
-        # Find most recent prompt
-        if not prompts_dir.exists():
-            raise PromptError(
-                f"Prompts directory not found: {prompts_dir}\n"
-                f"Set ARX_PROMPTS environment variable or specify a prompt file."
-            )
-        prompt_path = find_most_recent_prompt(prompts_dir)
-        if not prompt_path:
-            raise PromptError(f"No prompt files found in {prompts_dir}")
+    prompt_path = _resolve_prompt_path(prompt_file, prompts_dir)
 
     if not prompt_path.exists():
         raise PromptError(f"Prompt file not found: {prompt_path}")
 
-    # Load data
+    # Build data context via render.build_context (file < --data-json < stdin)
     stdin_data = read_stdin_if_available()
-    data_path = Path(data_file) if data_file else None
-    data = load_json_data(data_path, stdin_data)
+    try:
+        data = build_context(data_json=data_json, data_file=data_file, stdin_json=stdin_data)
+    except ValueError as exc:
+        raise PromptError(str(exc)) from exc
 
-    # Determine data source for history
-    data_source = None
-    if data_file and stdin_data:
-        data_source = f"{data_file} + stdin"
-    elif data_file:
-        data_source = data_file
-    elif stdin_data:
-        data_source = "stdin"
+    data_source = _build_data_source_label(data_file, data_json, stdin_data)
 
-    # Read prompt content
-    prompt_content = prompt_path.read_text()
-
-    # Dry run - just show what would happen
+    # Dry run
     if dry_run:
-        click.secho("=== Dry Run ===", fg="cyan", bold=True)
-        click.echo(f"Prompt file: {prompt_path}")
-        click.echo(f"Data source: {data_source or 'none'}")
-        if data:
-            click.echo(f"Data keys: {list(data.keys())}")
-        click.echo(f"Output: {output_file or 'stdout'}")
-        click.echo(f"History: {'enabled' if history else 'disabled'}")
-        click.echo()
-        click.secho("=== Prompt Content ===", fg="cyan")
-        click.echo(prompt_content[:500] + ("..." if len(prompt_content) > 500 else ""))
-        if data:
-            click.echo()
-            click.secho("=== Data Preview ===", fg="cyan")
-            click.echo(json.dumps(data, indent=2)[:500])
+        _print_dry_run(prompt_path, data_source, data, output_file, history)
         return
 
     if verbose:
@@ -251,36 +218,16 @@ def _do_prompt_impl(
         if data_source:
             click.secho(f"With data from: {data_source}", fg="cyan")
 
-    # Build output content
-    # For now, just output the prompt content with data summary
-    # In full implementation, this would render ARX templates
-    output_lines = [
-        f"# Prompt: {prompt_path.name}",
-        "",
-        prompt_content,
-    ]
+    # Render template
+    try:
+        _fm, rendered = render_file(prompt_path, data)
+    except Exception as exc:
+        raise PromptError(f"Render error: {exc}") from exc
 
-    if data:
-        output_lines.extend([
-            "",
-            "---",
-            "## Context Data",
-            "```json",
-            json.dumps(data, indent=2),
-            "```",
-        ])
-
-    output_content = "\n".join(output_lines)
+    output_content = rendered
 
     # Write output
-    if output_file:
-        output_path = Path(output_file)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(output_content)
-        if verbose:
-            click.secho(f"Output written to: {output_path}", fg="green")
-    else:
-        click.echo(output_content)
+    _write_output(output_content, output_file, verbose)
 
     # Write history if requested
     if history:
@@ -295,6 +242,43 @@ def _do_prompt_impl(
         )
         if verbose:
             click.secho(f"History logged to: {history_file}", fg="green")
+
+
+def _print_dry_run(
+    prompt_path: Path,
+    data_source: Optional[str],
+    data: dict,
+    output_file: Optional[str],
+    history: bool,
+) -> None:
+    """Print dry-run summary."""
+    prompt_content = prompt_path.read_text(encoding="utf-8")
+    click.secho("=== Dry Run ===", fg="cyan", bold=True)
+    click.echo(f"Prompt file: {prompt_path}")
+    click.echo(f"Data source: {data_source or 'none'}")
+    if data:
+        click.echo(f"Data keys: {list(data.keys())}")
+    click.echo(f"Output: {output_file or 'stdout'}")
+    click.echo(f"History: {'enabled' if history else 'disabled'}")
+    click.echo()
+    click.secho("=== Prompt Content (first 500 chars) ===", fg="cyan")
+    click.echo(prompt_content[:500] + ("..." if len(prompt_content) > 500 else ""))
+    if data:
+        click.echo()
+        click.secho("=== Data Preview ===", fg="cyan")
+        click.echo(json.dumps(data, indent=2)[:500])
+
+
+def _write_output(content: str, output_file: Optional[str], verbose: bool) -> None:
+    """Write rendered content to file or stdout."""
+    if output_file:
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(content, encoding="utf-8")
+        if verbose:
+            click.secho(f"Output written to: {output_path}", fg="green")
+    else:
+        click.echo(content)
 
 
 @prompt.command("new")
