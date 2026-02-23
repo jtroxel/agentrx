@@ -285,51 +285,74 @@ class TestPromptDoCommand:
 class TestPromptNewCommand:
     """Tests for the prompt new command."""
 
-    def test_new_creates_file(self, runner, temp_prompts_dir):
-        """Should create prompt file."""
-        result = runner.invoke(cli, [
-            "prompt", "new", "Test prompt content"
-        ])
+    def test_new_plain_text(self, runner, temp_prompts_dir):
+        """Plain text (no template) should create a file in ARX_WORK_DOCS/vibes/."""
+        result = runner.invoke(cli, ["prompt", "new", "Test prompt content"])
         assert result.exit_code == 0
-
-        # Check file was created
-        md_files = list(temp_prompts_dir.glob("*.md"))
-        assert len(md_files) == 1
+        # Output path is printed; file must exist
+        out_path = result.output.strip()
+        assert out_path.endswith(".md")
 
     def test_new_with_custom_name(self, runner, temp_prompts_dir):
-        """Should use provided short name."""
+        """--name should set the base filename."""
         result = runner.invoke(cli, [
-            "prompt", "new", "Test content", "my_custom_name"
+            "prompt", "new", "Test content", "--name", "my_custom_name"
         ])
         assert result.exit_code == 0
+        out_path = result.output.strip()
+        assert "my_custom_name" in out_path
 
-        md_files = list(temp_prompts_dir.glob("my_custom_name_*.md"))
-        assert len(md_files) == 1
-
-    def test_new_with_custom_dir(self, runner, tmp_path):
-        """--dir should create in specified directory."""
-        custom_dir = tmp_path / "custom"
-
+    def test_new_with_custom_subdir(self, runner, temp_prompts_dir, tmp_path):
+        """--subdir should write into that subdir of ARX_WORK_DOCS."""
         result = runner.invoke(cli, [
-            "prompt", "new", "Test", "--dir", str(custom_dir)
+            "prompt", "new", "Test", "--subdir", "deltas"
         ])
         assert result.exit_code == 0
-        assert custom_dir.exists()
-        md_files = list(custom_dir.glob("*.md"))
-        assert len(md_files) == 1
+        out_path = result.output.strip()
+        assert "deltas" in out_path
 
-    def test_new_file_content(self, runner, temp_prompts_dir):
-        """Should create file with correct content structure."""
+    def test_new_from_template_file(self, runner, temp_prompts_dir, tmp_path):
+        """Template file: [[prompt]] :new tag should be substituted."""
+        tmpl = tmp_path / "my_tmpl.md"
+        tmpl.write_text("---\narx: template\nsubdir: vibes\n---\n# <ARX [[prompt]] :new />\n")
         result = runner.invoke(cli, [
-            "prompt", "new", "My test prompt content", "test"
+            "prompt", "new", str(tmpl), "Fix the auth bug"
         ])
         assert result.exit_code == 0
+        out_path = result.output.strip()
+        content = Path(out_path).read_text()
+        assert "Fix the auth bug" in content
 
-        md_files = list(temp_prompts_dir.glob("test_*.md"))
-        content = md_files[0].read_text()
-        assert "# Prompt: test" in content
-        assert "My test prompt content" in content
-        assert "Created:" in content
+    def test_new_phase_do_tag_preserved(self, runner, temp_prompts_dir, tmp_path):
+        """:do tags in a template must survive the :new render pass."""
+        tmpl = tmp_path / "tmpl.md"
+        tmpl.write_text("---\narx: template\n---\n<ARX [[user.name]] :do />\n")
+        result = runner.invoke(cli, [
+            "prompt", "new", str(tmpl), "Some prompt"
+        ])
+        assert result.exit_code == 0
+        out_path = result.output.strip()
+        content = Path(out_path).read_text()
+        # :do tag must still be in the saved file
+        assert "<ARX [[user.name]] :do />" in content
+
+    def test_new_dry_run(self, runner, temp_prompts_dir, tmp_path):
+        """--dry-run should not create a file."""
+        result = runner.invoke(cli, [
+            "prompt", "new", "Check this out", "--dry-run"
+        ])
+        assert result.exit_code == 0
+        assert "Dry Run" in result.output
+        # No files written
+        vibes = temp_prompts_dir / "vibes"
+        assert not vibes.exists() or len(list(vibes.glob("*.md"))) == 0
+
+    def test_new_first_arg_fallback_to_prompt_text(self, runner, temp_prompts_dir):
+        """If first arg doesn't resolve as a template, treat it as prompt text."""
+        result = runner.invoke(cli, ["prompt", "new", "Implement user auth"])
+        assert result.exit_code == 0
+        out_path = result.output.strip()
+        assert out_path.endswith(".md")
 
 
 class TestPromptListCommand:

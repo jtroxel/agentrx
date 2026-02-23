@@ -14,10 +14,22 @@ Only variable substitution (``[[var]]``, ``[[obj.key]]``, defaults via
 ``[[var | "default"]]``) is performed here.  Block/loop/include directives
 are preserved verbatim — full evaluation is agent-side.
 
+Render phases
+-------------
+Variable tags accept an optional phase marker **after** ``]]`` and before ``/>``::
+
+    <ARX [[prompt]] :new />        # only substituted during the "new" phase
+    <ARX [[user.name]] :do />      # only substituted during the "do" phase
+    <ARX [[config.version]] />     # eager — substituted at any phase when data present
+
+Pass ``phase="new"`` or ``phase="do"`` (matching ``arx prompt new`` / ``arx prompt do``)
+to ``render()`` / ``render_file()``.  Phase-tagged tags that don't match the
+current phase are **preserved verbatim** so the later phase can still resolve them.
+
 Public API
 ----------
-``render(text, data)``  → rendered string
-``render_file(path, data)``  → (front_matter_dict, rendered_string)
+``render(text, data, phase)``  → rendered string
+``render_file(path, data, phase)``  → (front_matter_dict, rendered_string)
 ``build_context(data_json, data_file, stdin_json)`` → merged dict
 """
 
@@ -73,11 +85,12 @@ def _expand_env(text: str) -> str:
 # ARX variable tag resolution
 # ---------------------------------------------------------------------------
 
-# Matches only simple variable tags — NOT block openers/closers/loops/includes.
-# Pattern: <ARX [[ expr ]] />
+# Matches variable tags — NOT block openers/closers/loops/includes.
+# Pattern: <ARX [[ expr ]] [:phase] />
 #   where expr is NOT starting with #, ^, *, @, /  (those are structural tags)
+#   [:phase] is an optional render-phase marker, e.g. :new  :do
 _VAR_TAG_RE = re.compile(
-    r"<ARX\s+\[\[\s*(?![#^*@/])(.*?)\s*\]\]\s*/>",
+    r"<ARX\s+\[\[\s*(?![#^*@/])(.*?)\s*\]\]\s*(?::(\w+)\s*)?/>",
     re.DOTALL,
 )
 
@@ -131,14 +144,33 @@ def _resolve_expr(expr: str, data: Dict[str, Any]) -> Optional[str]:
     return default_raw  # may be None → tag preserved
 
 
-def _render_var_tags(text: str, data: Dict[str, Any]) -> str:
-    """Replace resolvable ``<ARX [[expr]] />`` tags; leave unresolvable ones."""
+def _render_var_tags(
+    text: str,
+    data: Dict[str, Any],
+    phase: Optional[str] = None,
+) -> str:
+    """Replace resolvable ``<ARX [[expr]] [:phase] />`` tags; leave unresolvable ones.
+
+    Phase semantics:
+    - Tag has no phase marker → eager: always attempt resolution.
+    - Tag has ``:phase`` marker and ``phase`` arg matches → resolve.
+    - Tag has ``:phase`` marker and ``phase`` arg does NOT match → preserve verbatim.
+    - Tag has ``:phase`` marker and no ``phase`` arg → preserve verbatim
+      (phase-scoped tags are only resolved when the matching phase is active).
+    """
 
     def _sub(m: re.Match) -> str:
         expr = m.group(1)
+        tag_phase = m.group(2)  # None when no :phase marker
+
+        if tag_phase is not None:
+            # Phase-scoped tag: only resolve when phase matches
+            if phase is None or tag_phase != phase:
+                return m.group(0)  # preserve for correct phase
+
         resolved = _resolve_expr(expr, data)
         if resolved is None:
-            return m.group(0)  # preserve
+            return m.group(0)  # preserve unresolvable
         return resolved
 
     return _VAR_TAG_RE.sub(_sub, text)
@@ -148,32 +180,49 @@ def _render_var_tags(text: str, data: Dict[str, Any]) -> str:
 # Public render functions
 # ---------------------------------------------------------------------------
 
-def render(text: str, data: Optional[Dict[str, Any]] = None) -> str:
+def render(
+    text: str,
+    data: Optional[Dict[str, Any]] = None,
+    phase: Optional[str] = None,
+) -> str:
     """Render *text* (no front-matter stripping) against *data* + env.
 
     Steps:
       1. Env-var expansion (``$VAR`` / ``${VAR}``)
-      2. ARX variable tag substitution
+      2. ARX variable tag substitution (respecting *phase* markers)
+
+    Args:
+        text:  Raw template body.
+        data:  Variable dict merged with env for ``[[expr]]`` resolution.
+        phase: Active render phase (``"new"`` or ``"do"``).  Phase-tagged
+               tags that don't match are preserved verbatim.
 
     Unresolvable tags are left unchanged.
     """
     data = data or {}
     text = _expand_env(text)
-    text = _render_var_tags(text, data)
+    text = _render_var_tags(text, data, phase=phase)
     return text
 
 
 def render_file(
     path: Path,
     data: Optional[Dict[str, Any]] = None,
+    phase: Optional[str] = None,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     """Read *path*, strip front matter, render body.
 
     Returns ``(front_matter_dict_or_None, rendered_body)``.
+
+    Args:
+        path:  Template file path.
+        data:  Variable dict for ``[[expr]]`` resolution.
+        phase: Active render phase (``"new"`` or ``"do"``); forwarded to
+               ``render()``.
     """
     raw = path.read_text(encoding="utf-8")
     fm, body = strip_front_matter(raw)
-    rendered = render(body, data)
+    rendered = render(body, data, phase=phase)
     return fm, rendered
 
 
