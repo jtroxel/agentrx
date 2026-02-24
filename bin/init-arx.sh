@@ -95,6 +95,8 @@ prompt_dir() {
         read -e -r -p "  ${label} [${default}]: " value
     fi
     value="${value:-$default}"
+    # Expand leading ~ to $HOME (readline doesn't expand it for us)
+    value="${value/#\~/$HOME}"
     printf -v "$var" '%s' "$value"
 }
 

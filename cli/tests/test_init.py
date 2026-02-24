@@ -12,6 +12,7 @@ from agentrx.commands.init import (
     _write_file,
     _make_symlink,
     _strip_arx_marker,
+    _resolve_dirs,
     InitError,
     DEFAULT_AGENTS_DIR,
     DEFAULT_PROJECT_DIR,
@@ -442,3 +443,51 @@ class TestRunInit:
         assert (docs_dir / "deltas").exists()
         assert (docs_dir / "vibes").exists()
         assert (docs_dir / "history").exists()
+
+
+class TestTildeExpansion:
+    """Tests for ~ (tilde) path expansion in _resolve_dirs / _run_init."""
+
+    def test_tilde_agents_dir_expanded(self, temp_dir):
+        """Tilde in --agents-dir should be expanded to $HOME, not treated as relative."""
+        target = temp_dir / "project"
+        tilde_path = "~/some_agents_dir"
+
+        _run_init(
+            target_dir=str(target),
+            link_arx=False,
+            verbose=False,
+            dry_run=True,
+            agentrx_source=None,
+            agents_dir=tilde_path,
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+        )
+
+        # The key assertion: ~ should NOT appear as a literal directory name
+        bogus_path = target / "~" / "some_agents_dir"
+        assert not bogus_path.exists(), (
+            f"Tilde was treated as relative — created {bogus_path}"
+        )
+
+    def test_tilde_resolves_to_home(self, temp_dir):
+        """Path with ~ should resolve to an absolute path under $HOME."""
+        from agentrx.commands.init import _resolve_dirs
+
+        target = temp_dir / "project"
+        target.mkdir(parents=True, exist_ok=True)
+        home = os.path.expanduser("~")
+
+        agents, _, _, _ = _resolve_dirs(
+            root=target,
+            agents_dir="~/my_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            interactive=False,
+        )
+
+        assert str(agents) == os.path.join(home, "my_agents")
+        assert not str(agents).startswith(str(target))

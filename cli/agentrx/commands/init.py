@@ -735,7 +735,7 @@ def _resolve_dirs(
         wd = work_docs   or _env(ENV_WORK_DOCS,    DEFAULT_WORK_DOCS)
 
     def _abs(val: str, base: Path) -> Path:
-        v = Path(val)
+        v = Path(val).expanduser()
         return v if v.is_absolute() else base / v
 
     return _abs(a, root), _abs(p, root), _abs(pd, root), _abs(wd, root)
