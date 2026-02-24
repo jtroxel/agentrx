@@ -3,12 +3,15 @@
 Implements `arx init` per the CLI README specification.
 
 Environment variables (written to .env, read as defaults):
-  ARX_PROJECT_ROOT   Root directory of the host project (always = CWD / target_dir).
-  ARX_AGENT_TOOLS    Agent assets directory (default: $ARX_PROJECT_ROOT/_agents/).
-  ARX_TARGET_PROJ    Target project directory (default: $ARX_PROJECT_ROOT/_project/).
+  ARX_WORKSPACE_ROOT Workspace root directory (always = CWD / target_dir).
+  ARX_AGENT_TOOLS    Agent assets directory (default: $ARX_WORKSPACE_ROOT/_agents/).
+  ARX_TARGET_PROJ    Target project directory (default: $ARX_WORKSPACE_ROOT/_project/).
   ARX_PROJ_DOCS      Project documentation directory (default: $ARX_TARGET_PROJ/docs).
   ARX_WORK_DOCS      Working docs directory — vibes, deltas, history (default: $ARX_PROJ_DOCS/agentrx).
   AGENTRX_SOURCE     Source of AgentRx assets used with --link-arx or copy.
+
+Backward compatibility:
+  ARX_PROJECT_ROOT is accepted as a fallback when ARX_WORKSPACE_ROOT is not set.
 """
 
 import os
@@ -109,13 +112,14 @@ After loading, output a confirmation listing available commands and skills.
 # Environment variable names (per README)
 # ---------------------------------------------------------------------------
 
-ENV_PROJECT_ROOT = "ARX_PROJECT_ROOT"
+ENV_WORKSPACE_ROOT = "ARX_WORKSPACE_ROOT"
+ENV_PROJECT_ROOT_LEGACY = "ARX_PROJECT_ROOT"  # backward compat
 ENV_AGENT_TOOLS  = "ARX_AGENT_TOOLS"
 ENV_TARGET_PROJ  = "ARX_TARGET_PROJ"
 ENV_PROJ_DOCS    = "ARX_PROJ_DOCS"
 ENV_WORK_DOCS    = "ARX_WORK_DOCS"
 
-# Default relative paths (relative to project root)
+# Default relative paths (relative to workspace root)
 DEFAULT_AGENTS_DIR  = "_agents"
 DEFAULT_PROJECT_DIR = "_project"
 DEFAULT_PROJ_DOCS   = "_project/docs"
@@ -651,8 +655,8 @@ def init(
     """Initialize an AgentRx project structure.
 
     \b
-    TARGET_DIR  Project root to initialise (default: current directory).
-                ARX_PROJECT_ROOT is always set to this path.
+    TARGET_DIR  Workspace root to initialise (default: current directory).
+                ARX_WORKSPACE_ROOT is always set to this path.
 
     \b
     Directory rules (per README):
@@ -764,7 +768,7 @@ def _run_init(
     click.echo()
     click.secho("AgentRx Project Initialization", fg="blue", bold=True)
     click.echo("=" * 44)
-    click.echo(f"  {ENV_PROJECT_ROOT:20s} = {root}")
+    click.echo(f"  {ENV_WORKSPACE_ROOT:20s} = {root}")
     click.echo(f"  Mode                 = {'link (--link-arx)' if link_arx else 'copy (default)'}")
     if agentrx_source:
         click.echo(f"  AGENTRX_SOURCE       = {agentrx_source}")
@@ -819,7 +823,7 @@ def _run_init(
     click.echo()
     click.secho(".env:", fg="cyan")
     runner.update_env(root / ".env", {
-        ENV_PROJECT_ROOT: str(root),
+        ENV_WORKSPACE_ROOT: str(root),
         ENV_AGENT_TOOLS:  str(agents_path),
         ENV_TARGET_PROJ:  str(proj_path),
         ENV_PROJ_DOCS:    str(proj_docs_path),

@@ -8,9 +8,9 @@ arx: template
 ## Top-Level Folder
 This folder contains template files for AgentRx projects, including documentation templates, prompt templates, and example artifacts.
 
-The (top-level) directory (here) contains templates for AgentRx files that instruct Coding Agents on how use AgentRx tools on a project. These files contain core context information for agentic development. This level corresponds to the root project directory, `$ARX_PROJECT_ROOT`.
+The (top-level) directory (here) contains templates for AgentRx files that instruct Coding Agents on how use AgentRx tools on a project. These files contain core context information for agentic development. This level corresponds to the workspace root directory, `$ARX_WORKSPACE_ROOT`.
 
-During init/install, all files at this (top-level) directory, matching the following patterns are copied or linked into `$ARX_PROJECT_ROOT/`.
+During init/install, all files at this (top-level) directory, matching the following patterns are copied or linked into `$ARX_WORKSPACE_ROOT/`.
  - `*.ARX.*`
  - `*.arx.*`
 

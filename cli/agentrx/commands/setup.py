@@ -9,7 +9,7 @@ from typing import Optional, List
 VALID_PROVIDERS = ["claude", "cursor", "opencode", "all"]
 
 
-def find_project_root(start_path: Path) -> Optional[Path]:
+def find_workspace_root(start_path: Path) -> Optional[Path]:
     """Find project root by looking for _agents or .claude directory."""
     current = start_path.resolve()
     while current != current.parent:
@@ -235,7 +235,7 @@ This project uses AgentRx for AI agent configuration.
 
 Additional context files:
 - `_agents/CLAUDE.md` - Claude-specific guidance
-- `_agents/project_root_files/CONTEXT_DOCUMENTS_INDEX.md` - Context document index
+- `_agents/workspace_root_files/CONTEXT_DOCUMENTS_INDEX.md` - Context document index
 
 ## Quick Reference
 
@@ -275,11 +275,11 @@ That file contains the authoritative instructions for this project.
 @click.command()
 @click.option("--provider", type=click.Choice(VALID_PROVIDERS, case_sensitive=False),
               default="all", help="Provider to set up: claude, cursor, opencode, or all")
-@click.option("--project-root", type=click.Path(exists=True),
-              help="Set project root directory")
+@click.option("--workspace-root", type=click.Path(exists=True),
+              help="Set workspace root directory")
 @click.option("--clean", is_flag=True, help="Remove existing files before creating new ones")
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed output")
-def setup(provider: str, project_root: Optional[str], clean: bool, verbose: bool):
+def setup(provider: str, workspace_root: Optional[str], clean: bool, verbose: bool):
     """Set up AI coding agent integration.
 
     Creates integration files for Claude Code, Cursor, and OpenCode.
@@ -292,10 +292,10 @@ def setup(provider: str, project_root: Optional[str], clean: bool, verbose: bool
       all       - All of the above (default)
     """
     # Find project root
-    if project_root:
-        root = Path(project_root).resolve()
+    if workspace_root:
+        root = Path(workspace_root).resolve()
     else:
-        root = find_project_root(Path.cwd())
+        root = find_workspace_root(Path.cwd())
         if not root:
             root = Path.cwd()
 

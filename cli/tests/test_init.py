@@ -209,7 +209,7 @@ class TestInitCommand:
         assert "ARX_TARGET_PROJ=" in env_content
         assert "ARX_PROJ_DOCS=" in env_content
         assert "ARX_WORK_DOCS=" in env_content
-        assert "ARX_PROJECT_ROOT=" in env_content
+        assert "ARX_WORKSPACE_ROOT=" in env_content
 
     def test_init_link_mode_requires_source(self, runner, temp_dir):
         """--link-arx mode should require --agentrx-source."""
@@ -349,7 +349,7 @@ class TestInitCommand:
         assert result.exit_code == 0
         env_content = env_path.read_text()
         assert "OTHER_VAR=value" in env_content
-        assert "ARX_PROJECT_ROOT=" in env_content
+        assert "ARX_WORKSPACE_ROOT=" in env_content
 
     def test_init_updates_existing_arx_values(self, runner, temp_dir):
         """init should update existing ARX_* values in .env."""
