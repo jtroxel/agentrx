@@ -185,7 +185,7 @@ class TestInitCommand:
         assert result.exit_code == 0
         # AGENTS.md comes from templates if available, otherwise not created
         assert (target / "CLAUDE.md").exists()
-        assert (target / "CHAT_START.md").exists()
+        assert not (target / "CHAT_START.md").exists()
         assert (target / ".env").exists()
 
     def test_init_env_file_content(self, runner, temp_dir):
