@@ -3,12 +3,15 @@
 Implements `arx init` per the CLI README specification.
 
 Environment variables (written to .env, read as defaults):
-  ARX_PROJECT_ROOT   Root directory of the host project (always = CWD / target_dir).
-  ARX_AGENT_TOOLS    Agent assets directory (default: $ARX_PROJECT_ROOT/_agents/).
-  ARX_TARGET_PROJ    Target project directory (default: $ARX_PROJECT_ROOT/_project/).
+  ARX_WORKSPACE_ROOT Workspace root directory (always = CWD / target_dir).
+  ARX_AGENT_TOOLS    Agent assets directory (default: $ARX_WORKSPACE_ROOT/_agents/).
+  ARX_TARGET_PROJ    Target project directory (default: $ARX_WORKSPACE_ROOT/_project/).
   ARX_PROJ_DOCS      Project documentation directory (default: $ARX_TARGET_PROJ/docs).
   ARX_WORK_DOCS      Working docs directory — vibes, deltas, history (default: $ARX_PROJ_DOCS/agentrx).
   AGENTRX_SOURCE     Source of AgentRx assets used with --link-arx or copy.
+
+Backward compatibility:
+  ARX_PROJECT_ROOT is accepted as a fallback when ARX_WORKSPACE_ROOT is not set.
 """
 
 import os
@@ -67,55 +70,18 @@ At startup provide a list of the files read in the chat history.
 For comprehensive project context, see [CONTEXT_DOCUMENTS_INDEX.md](./CONTEXT_DOCUMENTS_INDEX.md).
 """
 
-CHAT_START_TEMPLATE = """\
----
-arx: config
-name: chat-start
-description: Bootstrap instructions for coding agents starting new sessions
-version: 1
----
-
-# AgentRx Bootstrap Instructions
-
-> **For Coding Agents**: Follow these instructions precisely at session start.
-
-## Step 1: Load Core Context
-
-Read these files **in parallel** to establish AgentRx capabilities:
-
-### Commands (treat as native slash commands)
-```
-_agents/commands/agentrx/*.md
-```
-
-### Skills
-```
-_agents/skills/agentrx/*.md
-```
-
-## Step 2: Confirm Bootstrap
-
-After loading, output a confirmation listing available commands and skills.
-
-## Important Notes
-
-1. **Commands as native** - Treat `_agents/commands/` items as native CLI slash commands
-2. **Project context** - Load project-specific files when user references them
-3. **ARX templates** - Files with `arx: template` front matter are renderable templates
-4. **Follow precisely** - If something wasn't specified, don't do it
-"""
-
 # ---------------------------------------------------------------------------
 # Environment variable names (per README)
 # ---------------------------------------------------------------------------
 
-ENV_PROJECT_ROOT = "ARX_PROJECT_ROOT"
+ENV_WORKSPACE_ROOT = "ARX_WORKSPACE_ROOT"
+ENV_PROJECT_ROOT_LEGACY = "ARX_PROJECT_ROOT"  # backward compat
 ENV_AGENT_TOOLS  = "ARX_AGENT_TOOLS"
 ENV_TARGET_PROJ  = "ARX_TARGET_PROJ"
 ENV_PROJ_DOCS    = "ARX_PROJ_DOCS"
 ENV_WORK_DOCS    = "ARX_WORK_DOCS"
 
-# Default relative paths (relative to project root)
+# Default relative paths (relative to workspace root)
 DEFAULT_AGENTS_DIR  = "_agents"
 DEFAULT_PROJECT_DIR = "_project"
 DEFAULT_PROJ_DOCS   = "_project/docs"
@@ -127,6 +93,7 @@ AGENT_SUBDIRS = ["commands", "skills", "scripts", "hooks", "agents"]
 # Name of the agents-tools template subdir inside templates/
 # This subtree is routed to ARX_AGENT_TOOLS instead of the project root.
 AGENTS_TEMPLATE_SUBDIR = "_arx_agent_tools.arx"
+DOCS_TEMPLATE_SUBDIR   = "_arx_target_docs.arx"
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +530,75 @@ def _templates_display(templates_dir: Path, agentrx_source: Optional[str]) -> Pa
         return templates_dir
 
 
+def _install_docs_skeleton(
+    proj_docs_path: Path,
+    agentrx_source: Optional[str],
+    context: Dict[str, Any],
+    runner: "_Runner",
+) -> bool:
+    """Copy docs skeleton templates into *proj_docs_path*.
+
+    Files come from ``templates/DOCS_TEMPLATE_SUBDIR/``.  The ``.ARX.`` marker
+    is stripped from filenames on the way out (same convention as root-level
+    templates).  Already-existing files are skipped (``skip_existing=True``).
+
+    Returns True if the skeleton source directory was found, False otherwise.
+    """
+    templates_dir = _find_templates_dir(agentrx_source)
+    if not templates_dir:
+        return False
+    docs_src = templates_dir / DOCS_TEMPLATE_SUBDIR
+    if not docs_src.exists():
+        return False
+
+    for item in sorted(docs_src.rglob("*")):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(docs_src)
+        if _is_junk(rel):
+            continue
+        stripped_name = _strip_arx_marker(rel.name)
+        dst_rel = rel.parent / stripped_name
+        dst = proj_docs_path / dst_rel
+        if dst.parent != proj_docs_path and not dst.parent.exists():
+            runner.mkdir(dst.parent)
+        _write_template_item(
+            item, dst, context, runner,
+            label=str(dst_rel),
+            src_display=Path("templates") / DOCS_TEMPLATE_SUBDIR / rel,
+        )
+    return True
+
+
+def _preview_docs_skeleton(
+    proj_docs_path: Path,
+    agentrx_source: Optional[str],
+) -> None:
+    """Print a tree-style preview of the docs files that would be created."""
+    templates_dir = _find_templates_dir(agentrx_source)
+    if not templates_dir:
+        click.echo("  (no docs skeleton found)")
+        return
+    docs_src = templates_dir / DOCS_TEMPLATE_SUBDIR
+    if not docs_src.exists():
+        click.echo(f"  (docs template dir not found: {docs_src})")
+        return
+
+    click.echo(f"  {proj_docs_path}/")
+    for item in sorted(docs_src.rglob("*")):
+        if item.is_dir():
+            continue
+        rel = item.relative_to(docs_src)
+        if _is_junk(rel):
+            continue
+        stripped_name = _strip_arx_marker(rel.name)
+        dst_rel = rel.parent / stripped_name
+        depth = len(dst_rel.parts)
+        indent = "    " + "    " * (depth - 1)
+        marker = "└── " if depth > 1 else "├── "
+        click.echo(f"  {indent}{marker}{dst_rel.name}")
+
+
 def _copy_templates(root: Path, agents_path: Path,
                     agentrx_source: Optional[str],
                     context: Dict[str, Any], runner: _Runner,
@@ -636,6 +672,8 @@ def _copy_templates(root: Path, agents_path: Path,
               help=f"Working docs dir (vibes/deltas/history).  Env: {ENV_WORK_DOCS}  [default: {DEFAULT_WORK_DOCS}]")
 @click.option("--data", "data_path", type=str,
               help="YAML file with template variables, or '-' for stdin.")
+@click.option("--docs/--no-docs", "install_docs", default=None,
+              help="Install documentation skeleton into ARX_PROJ_DOCS (default: ask interactively).")
 def init(
     target_dir: str,
     link_arx: bool,
@@ -647,12 +685,13 @@ def init(
     proj_docs: Optional[str],
     work_docs: Optional[str],
     data_path: Optional[str],
+    install_docs: Optional[bool],
 ) -> None:
     """Initialize an AgentRx project structure.
 
     \b
-    TARGET_DIR  Project root to initialise (default: current directory).
-                ARX_PROJECT_ROOT is always set to this path.
+    TARGET_DIR  Workspace root to initialise (default: current directory).
+                ARX_WORKSPACE_ROOT is always set to this path.
 
     \b
     Directory rules (per README):
@@ -692,6 +731,7 @@ def init(
             proj_docs=proj_docs,
             work_docs=work_docs,
             data_path=data_path,
+            install_docs=install_docs,
         )
     except InitError as exc:
         click.secho(f"\nError: {exc}", fg="red", err=True)
@@ -735,7 +775,7 @@ def _resolve_dirs(
         wd = work_docs   or _env(ENV_WORK_DOCS,    DEFAULT_WORK_DOCS)
 
     def _abs(val: str, base: Path) -> Path:
-        v = Path(val)
+        v = Path(val).expanduser()
         return v if v.is_absolute() else base / v
 
     return _abs(a, root), _abs(p, root), _abs(pd, root), _abs(wd, root)
@@ -756,6 +796,7 @@ def _run_init(
     proj_docs: Optional[str],
     work_docs: Optional[str],
     data_path: Optional[str],
+    install_docs: Optional[bool] = None,
 ) -> None:
     root = Path(target_dir).resolve()
     runner = _Runner(dry_run=dry_run, verbose=verbose)
@@ -764,7 +805,7 @@ def _run_init(
     click.echo()
     click.secho("AgentRx Project Initialization", fg="blue", bold=True)
     click.echo("=" * 44)
-    click.echo(f"  {ENV_PROJECT_ROOT:20s} = {root}")
+    click.echo(f"  {ENV_WORKSPACE_ROOT:20s} = {root}")
     click.echo(f"  Mode                 = {'link (--link-arx)' if link_arx else 'copy (default)'}")
     if agentrx_source:
         click.echo(f"  AGENTRX_SOURCE       = {agentrx_source}")
@@ -805,13 +846,12 @@ def _run_init(
 
     # ── root bootstrap files ──────────────────────────────────────────────────
     # AGENTS.md is installed by _copy_templates (from templates/AGENTS.ARX.md).
-    # CLAUDE.md and CHAT_START.md have no .ARX. template counterpart yet; write
-    # from inline defaults only if absent.
+    # CLAUDE.md has no .ARX. template counterpart yet; write from inline
+    # default only if absent.
     click.echo()
     click.secho("Bootstrap files:", fg="cyan")
     for fname, content in [
         ("CLAUDE.md", CLAUDE_MD_TEMPLATE),
-        ("CHAT_START.md", CHAT_START_TEMPLATE),
     ]:
         runner.write(root / fname, content, skip_existing=True, label=fname)
 
@@ -819,7 +859,7 @@ def _run_init(
     click.echo()
     click.secho(".env:", fg="cyan")
     runner.update_env(root / ".env", {
-        ENV_PROJECT_ROOT: str(root),
+        ENV_WORKSPACE_ROOT: str(root),
         ENV_AGENT_TOOLS:  str(agents_path),
         ENV_TARGET_PROJ:  str(proj_path),
         ENV_PROJ_DOCS:    str(proj_docs_path),
@@ -839,3 +879,34 @@ def _run_init(
     click.echo(f"  2. Add your project code under {proj_path}/")
     click.echo("  3. Use /agentrx:prompt-new to create prompts")
     click.echo()
+
+    # ── optional docs skeleton ────────────────────────────────────────────────
+    templates_dir = _find_templates_dir(agentrx_source)
+    docs_src = (templates_dir / DOCS_TEMPLATE_SUBDIR) if templates_dir else None
+    if docs_src and docs_src.exists():
+        click.echo("─" * 44)
+        click.secho("Optional: Documentation Skeleton", fg="cyan", bold=True)
+        click.echo(
+            f"\nWould you like to install a starter docs skeleton into:\n"
+            f"  {proj_docs_path}/\n"
+        )
+        _preview_docs_skeleton(proj_docs_path, agentrx_source)
+        click.echo()
+
+        if dry_run:
+            click.secho(
+                "(Dry run — skipping docs skeleton prompt.)", fg="yellow"
+            )
+        else:
+            if install_docs is None:
+                install_docs = click.confirm(
+                    "Install documentation skeleton?", default=False
+                )
+            if install_docs:
+                click.echo()
+                click.secho("Docs skeleton:", fg="cyan")
+                _install_docs_skeleton(proj_docs_path, agentrx_source, context, runner)
+                click.secho("Documentation skeleton installed.", fg="green")
+            else:
+                click.echo("Skipped. You can add docs manually later.")
+        click.echo()

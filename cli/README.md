@@ -75,7 +75,7 @@ arx init \
 
 | Variable | Flag | Default | Description |
 |---|---|---|---|
-| `ARX_PROJECT_ROOT` | _(positional)_ | CWD | Project root; always set to where `arx init` runs. |
+| `ARX_WORKSPACE_ROOT` | _(positional)_ | CWD | Workspace root; always set to where `arx init` runs. (`ARX_PROJECT_ROOT` accepted as fallback.) |
 | `AGENTRX_SOURCE` | `--agentrx-source` | _(none)_ | AgentRx source directory. Required for `--link-arx`; optional for copy. |
 | `ARX_AGENT_TOOLS` | `--agents-dir` | `_agents` | Agent assets directory. |
 | `ARX_TARGET_PROJ` | `--target-proj` | `_project` | Target project directory. |

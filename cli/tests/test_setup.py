@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from agentrx.cli import cli
 from agentrx.commands.setup import (
-    find_project_root,
+    find_workspace_root,
     create_symlink,
     is_doc_file,
     setup_claude,
@@ -67,14 +67,14 @@ def mock_project(tmp_path):
 
 
 class TestFindProjectRoot:
-    """Tests for find_project_root function."""
+    """Tests for find_workspace_root function."""
 
     def test_finds_root_with_agents_dir(self, temp_dir):
         """Should find project root with _agents directory."""
         project = temp_dir / "project"
         (project / "_agents").mkdir(parents=True)
 
-        result = find_project_root(project / "subdir")
+        result = find_workspace_root(project / "subdir")
         assert result == project
 
     def test_finds_root_with_claude_dir(self, temp_dir):
@@ -82,12 +82,12 @@ class TestFindProjectRoot:
         project = temp_dir / "project"
         (project / ".claude").mkdir(parents=True)
 
-        result = find_project_root(project)
+        result = find_workspace_root(project)
         assert result == project
 
     def test_returns_none_when_not_found(self, temp_dir):
         """Should return None when no project markers found."""
-        result = find_project_root(temp_dir)
+        result = find_workspace_root(temp_dir)
         assert result is None
 
 
@@ -299,7 +299,7 @@ class TestSetupCommand:
         """setup with default --provider=all should set up all providers."""
         result = runner.invoke(
             cli,
-            ["setup", "--project-root", str(mock_project)],
+            ["setup", "--workspace-root", str(mock_project)],
         )
 
         assert result.exit_code == 0
@@ -311,7 +311,7 @@ class TestSetupCommand:
         """setup --provider claude should only set up Claude."""
         result = runner.invoke(
             cli,
-            ["setup", "--provider", "claude", "--project-root", str(mock_project)],
+            ["setup", "--provider", "claude", "--workspace-root", str(mock_project)],
         )
 
         assert result.exit_code == 0
@@ -322,7 +322,7 @@ class TestSetupCommand:
         """setup --provider cursor should only set up Cursor."""
         result = runner.invoke(
             cli,
-            ["setup", "--provider", "cursor", "--project-root", str(mock_project)],
+            ["setup", "--provider", "cursor", "--workspace-root", str(mock_project)],
         )
 
         assert result.exit_code == 0
@@ -333,7 +333,7 @@ class TestSetupCommand:
         """setup --provider opencode should only set up OpenCode."""
         result = runner.invoke(
             cli,
-            ["setup", "--provider", "opencode", "--project-root", str(mock_project)],
+            ["setup", "--provider", "opencode", "--workspace-root", str(mock_project)],
         )
 
         assert result.exit_code == 0
@@ -348,7 +348,7 @@ class TestSetupCommand:
 
         result = runner.invoke(
             cli,
-            ["setup", "--project-root", str(empty_project)],
+            ["setup", "--workspace-root", str(empty_project)],
         )
 
         assert result.exit_code == 1
@@ -358,7 +358,7 @@ class TestSetupCommand:
         """--verbose should show detailed output."""
         result = runner.invoke(
             cli,
-            ["setup", "--verbose", "--project-root", str(mock_project)],
+            ["setup", "--verbose", "--workspace-root", str(mock_project)],
         )
 
         assert result.exit_code == 0
@@ -370,7 +370,7 @@ class TestSetupCommand:
         # First setup
         result1 = runner.invoke(
             cli,
-            ["setup", "--project-root", str(mock_project)],
+            ["setup", "--workspace-root", str(mock_project)],
         )
         assert result1.exit_code == 0
 
@@ -382,7 +382,7 @@ class TestSetupCommand:
         # Second setup with clean
         result2 = runner.invoke(
             cli,
-            ["setup", "--clean", "--project-root", str(mock_project)],
+            ["setup", "--clean", "--workspace-root", str(mock_project)],
         )
 
         assert result2.exit_code == 0
@@ -394,7 +394,7 @@ class TestSetupCommand:
         """setup should show a summary of created files."""
         result = runner.invoke(
             cli,
-            ["setup", "--project-root", str(mock_project)],
+            ["setup", "--workspace-root", str(mock_project)],
         )
 
         assert result.exit_code == 0

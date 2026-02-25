@@ -42,15 +42,15 @@ if [[ -z "${AGENTRX_SOURCE:-}" ]]; then
     exit 1
 fi
 
-PROJECT_ROOT="${POSITIONAL_ARGS[0]:-.}"
-PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
+WORKSPACE_ROOT="${POSITIONAL_ARGS[0]:-.}"
+WORKSPACE_ROOT="$(cd "$WORKSPACE_ROOT" && pwd)"
 
 # ---------------------------------------------------------------------------
 # Activate venv
 # ---------------------------------------------------------------------------
 
 VENV_ACTIVATED=false
-for venv_candidate in "$PROJECT_ROOT/.venv" "$PROJECT_ROOT/venv"; do
+for venv_candidate in "$WORKSPACE_ROOT/.venv" "$WORKSPACE_ROOT/venv"; do
     if [[ -f "$venv_candidate/bin/activate" ]]; then
         # shellcheck source=/dev/null
         source "$venv_candidate/bin/activate"
@@ -60,7 +60,7 @@ for venv_candidate in "$PROJECT_ROOT/.venv" "$PROJECT_ROOT/venv"; do
 done
 
 if [[ "$VENV_ACTIVATED" = false ]]; then
-    echo "Warning: no .venv/ or venv/ found in $PROJECT_ROOT — using current Python." >&2
+    echo "Warning: no .venv/ or venv/ found in $WORKSPACE_ROOT — using current Python." >&2
 fi
 
 # ---------------------------------------------------------------------------
@@ -95,6 +95,8 @@ prompt_dir() {
         read -e -r -p "  ${label} [${default}]: " value
     fi
     value="${value:-$default}"
+    # Expand leading ~ to $HOME (readline doesn't expand it for us)
+    value="${value/#\~/$HOME}"
     printf -v "$var" '%s' "$value"
 }
 
@@ -102,12 +104,12 @@ prompt_dir() {
 # Interactive prompts
 # ---------------------------------------------------------------------------
 
-cd "$PROJECT_ROOT"
+cd "$WORKSPACE_ROOT"
 
 echo ""
 echo "${BOLD}AgentRx Project Initialization${RESET}"
 echo "========================================"
-echo "  Project root : $PROJECT_ROOT"
+echo "  Workspace    : $WORKSPACE_ROOT"
 echo "  ARX source   : $AGENTRX_SOURCE"
 echo ""
 echo "${CYAN}Directory layout${RESET} (Tab to complete paths, Enter to accept default):"
@@ -159,7 +161,7 @@ echo ""
 # .gitignore
 # ---------------------------------------------------------------------------
 
-GITIGNORE="$PROJECT_ROOT/.gitignore"
+GITIGNORE="$WORKSPACE_ROOT/.gitignore"
 
 add_to_gitignore() {
     local entry="$1"
@@ -211,7 +213,7 @@ ARX_CMD=(
 )
 [[ -n "$MODE_FLAG"  ]] && ARX_CMD+=("$MODE_FLAG")
 [[ -n "$DRY_FLAG"   ]] && ARX_CMD+=("$DRY_FLAG")
-ARX_CMD+=("$PROJECT_ROOT")
+ARX_CMD+=("$WORKSPACE_ROOT")
 
 echo "Running: ${ARX_CMD[*]}"
 echo ""

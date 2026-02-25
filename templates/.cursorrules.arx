@@ -1,0 +1,17 @@
+# Cursor Rules - AgentRx Integration
+# This file wraps the AgentRx agent configuration.
+# For full agent instructions, see: _agents/AGENTS.md
+
+## Important Files
+Read the following files at the start of each session:
+1. `_agents/AGENTS.md` - Main agent instructions
+2. `_agents/CLAUDE.md` - Additional guidance (if exists)
+
+## Quick Reference
+- Commands are in `_agents/commands/`
+- Skills are in `_agents/skills/`
+- Hooks are in `_agents/hooks/`
+
+## Instructions
+Follow all guidance in `_agents/AGENTS.md`. That file contains the primary
+instructions for AI agents working with this codebase.
