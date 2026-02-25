@@ -13,11 +13,14 @@ from agentrx.commands.init import (
     _make_symlink,
     _strip_arx_marker,
     _resolve_dirs,
+    _install_docs_skeleton,
+    _Runner,
     InitError,
     DEFAULT_AGENTS_DIR,
     DEFAULT_PROJECT_DIR,
     DEFAULT_WORK_DOCS,
     AGENTS_TEMPLATE_SUBDIR,
+    DOCS_TEMPLATE_SUBDIR,
 )
 
 
@@ -149,6 +152,7 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
+                "--no-docs",
                 "--agents-dir", "_agents",
                 "--target-proj", "_project",
                 "--proj-docs", "_project/docs",
@@ -175,6 +179,7 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
+                "--no-docs",
                 "--agents-dir", "_agents",
                 "--target-proj", "_project",
                 "--proj-docs", "_project/docs",
@@ -197,6 +202,7 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
+                "--no-docs",
                 "--agents-dir", "my_agents",
                 "--target-proj", "my_project",
                 "--proj-docs", "my_project/docs",
@@ -292,6 +298,7 @@ class TestInitCommand:
                 "init",
                 str(target),
                 "--verbose",
+                "--no-docs",
                 "--agents-dir", "_agents",
                 "--target-proj", "_project",
                 "--proj-docs", "_project/docs",
@@ -339,6 +346,7 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
+                "--no-docs",
                 "--agents-dir", "_agents",
                 "--target-proj", "_project",
                 "--proj-docs", "_project/docs",
@@ -365,6 +373,7 @@ class TestInitCommand:
             [
                 "init",
                 str(target),
+                "--no-docs",
                 "--agents-dir", "new_agents",
                 "--target-proj", "_project",
                 "--proj-docs", "_project/docs",
@@ -397,6 +406,7 @@ class TestRunInit:
             proj_docs=None,
             work_docs=None,
             data_path=None,
+            install_docs=False,
         )
 
         assert (target / DEFAULT_AGENTS_DIR).exists()
@@ -418,6 +428,7 @@ class TestRunInit:
                 proj_docs="_project/docs",
                 work_docs="_project/docs/agentrx",
                 data_path=None,
+                install_docs=False,
             )
 
         assert "requires" in str(exc_info.value).lower()
@@ -437,6 +448,7 @@ class TestRunInit:
             proj_docs="_project/docs",
             work_docs="_project/docs/agentrx",
             data_path=None,
+            install_docs=False,
         )
 
         docs_dir = target / "_project" / "docs" / "agentrx"
@@ -464,6 +476,7 @@ class TestTildeExpansion:
             proj_docs="_project/docs",
             work_docs="_project/docs/agentrx",
             data_path=None,
+            install_docs=False,
         )
 
         # The key assertion: ~ should NOT appear as a literal directory name
@@ -491,3 +504,184 @@ class TestTildeExpansion:
 
         assert str(agents) == os.path.join(home, "my_agents")
         assert not str(agents).startswith(str(target))
+
+
+class TestDocsSkeletonInstall:
+    """Tests for the optional docs skeleton install feature."""
+
+    @pytest.fixture
+    def fake_arx_source(self, tmp_path):
+        """Create a fake AGENTRX_SOURCE directory with a docs skeleton template."""
+        src = tmp_path / "agentrx-src"
+        docs_tmpl = src / "templates" / DOCS_TEMPLATE_SUBDIR
+        docs_tmpl.mkdir(parents=True)
+        (docs_tmpl / "README.ARX.md").write_text("# Docs for <ARX [[project_name]] />\n")
+        (docs_tmpl / "Product.ARX.md").write_text("# Product\n")
+        features = docs_tmpl / "features"
+        features.mkdir()
+        (features / "feature.ARX.md").write_text("# Feature template\n")
+        return src
+
+    def test_install_docs_skeleton_copies_files(self, tmp_path, fake_arx_source):
+        """_install_docs_skeleton() copies skeleton files, stripping .ARX. from names."""
+        proj_docs = tmp_path / "docs"
+        proj_docs.mkdir()
+
+        result = _install_docs_skeleton(
+            proj_docs_path=proj_docs,
+            agentrx_source=str(fake_arx_source),
+            context={},
+            runner=_Runner(dry_run=False, verbose=False),
+        )
+
+        assert result is True
+        assert (proj_docs / "README.md").exists()
+        assert (proj_docs / "Product.md").exists()
+        assert (proj_docs / "features" / "feature.md").exists()
+        # Original .ARX. names should NOT exist
+        assert not (proj_docs / "README.ARX.md").exists()
+
+    def test_install_docs_skeleton_returns_false_when_no_template(self, tmp_path):
+        """_install_docs_skeleton() returns False when DOCS_TEMPLATE_SUBDIR is absent."""
+        proj_docs = tmp_path / "docs"
+        proj_docs.mkdir()
+        # Source has a templates/ dir but no _arx_target_docs.arx/ subdir
+        fake_src = tmp_path / "no-docs-src"
+        (fake_src / "templates").mkdir(parents=True)
+
+        result = _install_docs_skeleton(
+            proj_docs_path=proj_docs,
+            agentrx_source=str(fake_src),
+            context={},
+            runner=_Runner(dry_run=False, verbose=False),
+        )
+
+        assert result is False
+
+    def test_install_docs_skeleton_skips_existing_files(self, tmp_path, fake_arx_source):
+        """_install_docs_skeleton() does not overwrite already-existing files."""
+        proj_docs = tmp_path / "docs"
+        proj_docs.mkdir()
+        existing = proj_docs / "README.md"
+        existing.write_text("MY EXISTING CONTENT\n")
+
+        _install_docs_skeleton(
+            proj_docs_path=proj_docs,
+            agentrx_source=str(fake_arx_source),
+            context={},
+            runner=_Runner(dry_run=False, verbose=False),
+        )
+
+        assert existing.read_text() == "MY EXISTING CONTENT\n"
+
+    def test_docs_flag_installs_skeleton(self, tmp_path, runner, fake_arx_source):
+        """--docs flag triggers skeleton install without prompting."""
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(tmp_path),
+                "--agentrx-source", str(fake_arx_source),
+                "--docs",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        proj_docs = tmp_path / DEFAULT_PROJECT_DIR / "docs"
+        assert (proj_docs / "README.md").exists()
+
+    def test_no_docs_flag_skips_skeleton(self, tmp_path, runner, fake_arx_source):
+        """--no-docs flag skips install without prompting."""
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(tmp_path),
+                "--agentrx-source", str(fake_arx_source),
+                "--no-docs",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        proj_docs = tmp_path / DEFAULT_PROJECT_DIR / "docs"
+        assert not (proj_docs / "README.md").exists()
+
+    def test_docs_interactive_yes(self, tmp_path, runner, fake_arx_source):
+        """Answering 'y' to the interactive prompt installs the skeleton."""
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(tmp_path),
+                "--agentrx-source", str(fake_arx_source),
+            ],
+            input="y\n",
+        )
+        assert result.exit_code == 0, result.output
+        proj_docs = tmp_path / DEFAULT_PROJECT_DIR / "docs"
+        assert (proj_docs / "README.md").exists()
+
+    def test_docs_interactive_no(self, tmp_path, runner, fake_arx_source):
+        """Answering 'n' to the interactive prompt skips the skeleton."""
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(tmp_path),
+                "--agentrx-source", str(fake_arx_source),
+            ],
+            input="n\n",
+        )
+        assert result.exit_code == 0, result.output
+        proj_docs = tmp_path / DEFAULT_PROJECT_DIR / "docs"
+        assert not (proj_docs / "README.md").exists()
+
+    def test_docs_dry_run_skips_prompt(self, tmp_path, runner, fake_arx_source):
+        """Dry-run mode shows a preview message and does not prompt or copy files."""
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(tmp_path),
+                "--agentrx-source", str(fake_arx_source),
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        proj_docs = tmp_path / DEFAULT_PROJECT_DIR / "docs"
+        assert not (proj_docs / "README.md").exists()
+
+    def test_run_init_install_docs_true(self, tmp_path, fake_arx_source):
+        """_run_init() with install_docs=True installs the skeleton."""
+        _run_init(
+            target_dir=str(tmp_path),
+            link_arx=False,
+            verbose=False,
+            dry_run=False,
+            agentrx_source=str(fake_arx_source),
+            agents_dir="_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+            install_docs=True,
+        )
+        proj_docs = tmp_path / "_project" / "docs"
+        assert (proj_docs / "README.md").exists()
+
+    def test_run_init_install_docs_false(self, tmp_path, fake_arx_source):
+        """_run_init() with install_docs=False skips the skeleton."""
+        _run_init(
+            target_dir=str(tmp_path),
+            link_arx=False,
+            verbose=False,
+            dry_run=False,
+            agentrx_source=str(fake_arx_source),
+            agents_dir="_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+            install_docs=False,
+        )
+        proj_docs = tmp_path / "_project" / "docs"
+        assert not (proj_docs / "README.md").exists()
