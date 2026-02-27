@@ -1,0 +1,58 @@
+#compdef arx
+
+# zsh completion for the `arx` (AgentRx) CLI
+# Provides basic completion for top-level commands and `arx prompt` subcommands.
+# Place this file in a directory on your $fpath (for example /usr/local/share/zsh/site-functions)
+# or source it from your ~/.zshrc:  source /path/to/_arx
+
+_arx() {
+  local state
+  typeset -A opt_args
+
+  local -a main_cmds
+  main_cmds=(
+    'init:Initialize AgentRx project structure'
+    'prompt:Work with prompt files (do, new, list)'
+  )
+
+  _arguments -C \
+    '1:command:->cmds' \
+    '*::args:->args'
+
+  if [[ $state == cmds ]]; then
+    _describe 'arx commands' main_cmds && return
+  fi
+
+  # Handle `arx prompt ...`
+  if [[ ${words[2]} == prompt ]]; then
+    local -a prompt_subs
+    prompt_subs=(
+      'do:Execute a prompt file'
+      'new:Create a new prompt file'
+      'list:List recent prompts'
+    )
+
+    if (( CURRENT == 2 )); then
+      _describe 'prompt commands' prompt_subs && return
+    fi
+
+    # If subcommand is `do`, complete markdown files from ARX_PROMPTS (or default)
+    if [[ ${words[3]} == do || ${words[3]} == '' ]]; then
+      local prompts_dir
+      prompts_dir=${ARX_PROMPTS:-_project/docs/agentrx/vibes}
+
+      # If the env var points to a directory, complete .md files from it
+      if [[ -d $prompts_dir ]]; then
+        _files -W $prompts_dir -g '*.md' && return
+      fi
+    fi
+
+    # For `new` and `list` just allow generic filename/option completion
+    _file_names -/
+    return
+  fi
+
+  return 1
+}
+
+compdef _arx arx

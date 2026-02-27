@@ -440,14 +440,40 @@ def _setup_agent_tools_link(agents_path: Path, agentrx_source: str,
         _link_one_subdir(sub, agents_path, src_agents, runner)
 
 
-def _setup_agent_tools_copy(agents_path: Path, runner: _Runner) -> None:
+def _setup_agent_tools_copy(agents_path: Path, agentrx_source: Optional[str],
+                            runner: _Runner) -> None:
     """Copy mode: create standard category skeleton under agents_path.
 
     Per README: file contents come from templates/AGENTS_TEMPLATE_SUBDIR/ via
-    _copy_templates routing.  Here we only ensure the skeleton dirs exist.
+    _copy_templates routing.  Here we ensure the skeleton dirs exist and warn
+    if the source template directory appears empty (e.g. broken submodule).
     """
     for sub in AGENT_SUBDIRS:
         runner.mkdir(agents_path / sub)
+
+    # Warn when the agent-tools template source has no copyable content.
+    templates_dir = _find_templates_dir(agentrx_source)
+    if templates_dir:
+        src_agents = templates_dir / AGENTS_TEMPLATE_SUBDIR
+        if src_agents.is_dir():
+            has_files = any(
+                f.is_file() and not _is_junk(f.relative_to(templates_dir))
+                for f in src_agents.rglob("*")
+            )
+            if not has_files:
+                click.secho(
+                    f"  Warning: {AGENTS_TEMPLATE_SUBDIR}/ exists but contains no files.\n"
+                    f"  Agent tools directories will be empty.\n"
+                    f"  (If this is a fresh clone, you may need to initialise the submodule:\n"
+                    f"    git submodule update --init)",
+                    fg="yellow",
+                )
+        elif not src_agents.exists():
+            click.secho(
+                f"  Warning: template directory {AGENTS_TEMPLATE_SUBDIR}/ not found in {templates_dir}.\n"
+                f"  Agent tools directories will be empty.",
+                fg="yellow",
+            )
 
 
 def _setup_agent_tools(agents_path: Path, link_arx: bool,
@@ -467,7 +493,7 @@ def _setup_agent_tools(agents_path: Path, link_arx: bool,
             raise InitError("--link-arx requires --agentrx-source or the AGENTRX_SOURCE env var.")
         _setup_agent_tools_link(agents_path, agentrx_source, runner)
     else:
-        _setup_agent_tools_copy(agents_path, runner)
+        _setup_agent_tools_copy(agents_path, agentrx_source, runner)
 
 
 def _setup_project_dir(proj_path: Path, runner: _Runner) -> None:
@@ -626,6 +652,11 @@ def _copy_templates(root: Path, agents_path: Path,
         if _is_junk(rel):
             continue
         in_agents_subdir = rel.parts[0] == AGENTS_TEMPLATE_SUBDIR
+        in_docs_subdir = rel.parts[0] == DOCS_TEMPLATE_SUBDIR
+        # Docs templates are handled separately by _install_docs_skeleton;
+        # skip them here to avoid creating a spurious directory at the root.
+        if in_docs_subdir:
+            continue
         # In link mode, skip the agents subtree — it is already symlinked
         if link_arx and in_agents_subdir:
             continue

@@ -685,3 +685,237 @@ class TestDocsSkeletonInstall:
         )
         proj_docs = tmp_path / "_project" / "docs"
         assert not (proj_docs / "README.md").exists()
+
+
+class TestDocsTemplateRouting:
+    """Regression tests: docs templates must not create a spurious directory
+    at the workspace root.  They are handled by _install_docs_skeleton only.
+    """
+
+    @pytest.fixture
+    def source_with_docs(self, tmp_path):
+        """Mock source with both agent-tools and docs template directories."""
+        source = tmp_path / "arx_src"
+        templates = source / "templates"
+        templates.mkdir(parents=True)
+
+        # Agent-tools templates
+        agents = templates / AGENTS_TEMPLATE_SUBDIR
+        for sub in ["commands", "skills", "scripts"]:
+            p = agents / sub / "agentrx"
+            p.mkdir(parents=True)
+            (p / "sample.md").write_text(f"# {sub}")
+
+        # Docs templates (mix of .ARX. and plain filenames, just like real repo)
+        docs = templates / DOCS_TEMPLATE_SUBDIR
+        docs.mkdir(parents=True)
+        (docs / "README.ARX.md").write_text("# README")
+        (docs / "Product.ARX.md").write_text("# Product")
+        (docs / "PROJECT_DOCS.md").write_text("# Project Docs")
+        features = docs / "features"
+        features.mkdir()
+        (features / "feature.ARX.md").write_text("# Feature")
+        (features / "CONTEXT.md").write_text("# Context")
+
+        # Root-level templates
+        (templates / "AGENTS.ARX.md").write_text("# AGENTS")
+
+        return source
+
+    def test_no_spurious_docs_dir_at_root(self, tmp_path, source_with_docs):
+        """_copy_templates must not create _arx_target_docs.arx/ at workspace root."""
+        target = tmp_path / "project"
+        _run_init(
+            target_dir=str(target),
+            link_arx=False,
+            verbose=False,
+            dry_run=False,
+            agentrx_source=str(source_with_docs),
+            agents_dir="_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+            install_docs=False,
+        )
+
+        bad_dir = target / DOCS_TEMPLATE_SUBDIR
+        assert not bad_dir.exists(), (
+            f"Spurious {DOCS_TEMPLATE_SUBDIR}/ created at workspace root"
+        )
+
+    def test_docs_installed_to_correct_location(self, tmp_path, source_with_docs):
+        """When --docs is set, docs skeleton goes to proj_docs, not root."""
+        target = tmp_path / "project"
+        _run_init(
+            target_dir=str(target),
+            link_arx=False,
+            verbose=False,
+            dry_run=False,
+            agentrx_source=str(source_with_docs),
+            agents_dir="_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+            install_docs=True,
+        )
+
+        proj_docs = target / "_project" / "docs"
+        assert (proj_docs / "README.md").exists()
+        assert (proj_docs / "Product.md").exists()
+        assert (proj_docs / "PROJECT_DOCS.md").exists()
+        assert (proj_docs / "features" / "feature.md").exists()
+
+        # Still no spurious root-level dir
+        bad_dir = target / DOCS_TEMPLATE_SUBDIR
+        assert not bad_dir.exists()
+
+    def test_agent_tools_populated_in_copy_mode(self, tmp_path, source_with_docs):
+        """Copy mode with source should populate agent-tools subdirs (not empty)."""
+        target = tmp_path / "project"
+        _run_init(
+            target_dir=str(target),
+            link_arx=False,
+            verbose=False,
+            dry_run=False,
+            agentrx_source=str(source_with_docs),
+            agents_dir="_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+            install_docs=False,
+        )
+
+        agents = target / "_agents"
+        assert (agents / "commands" / "agentrx" / "sample.md").exists()
+        assert (agents / "skills" / "agentrx" / "sample.md").exists()
+        assert (agents / "scripts" / "agentrx" / "sample.md").exists()
+
+    def test_no_spurious_docs_dir_link_mode(self, tmp_path, source_with_docs):
+        """Link mode must also not create spurious docs dir at root."""
+        target = tmp_path / "project"
+        _run_init(
+            target_dir=str(target),
+            link_arx=True,
+            verbose=False,
+            dry_run=False,
+            agentrx_source=str(source_with_docs),
+            agents_dir="_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+            install_docs=False,
+        )
+
+        bad_dir = target / DOCS_TEMPLATE_SUBDIR
+        assert not bad_dir.exists()
+
+    def test_no_spurious_docs_dir_dry_run(self, tmp_path, runner, source_with_docs):
+        """Dry-run must also not create the spurious docs directory."""
+        target = tmp_path / "project"
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(target),
+                "--dry-run",
+                "--agentrx-source", str(source_with_docs),
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
+            ],
+        )
+        assert result.exit_code == 0
+        bad_dir = target / DOCS_TEMPLATE_SUBDIR
+        assert not bad_dir.exists()
+
+
+class TestEmptyAgentToolsWarning:
+    """Tests for the warning when agent-tools template source is empty
+    (e.g. broken submodule on fresh clone).
+    """
+
+    @pytest.fixture
+    def source_empty_agents(self, tmp_path):
+        """Mock source where _arx_agent_tools.arx/ exists but is empty."""
+        source = tmp_path / "arx_src"
+        templates = source / "templates"
+        templates.mkdir(parents=True)
+        # Create the agent tools dir but put NO files in it (simulates empty submodule)
+        (templates / AGENTS_TEMPLATE_SUBDIR).mkdir()
+        (templates / "AGENTS.ARX.md").write_text("# AGENTS")
+        return source
+
+    @pytest.fixture
+    def source_missing_agents(self, tmp_path):
+        """Mock source where _arx_agent_tools.arx/ does not exist at all."""
+        source = tmp_path / "arx_src"
+        templates = source / "templates"
+        templates.mkdir(parents=True)
+        (templates / "AGENTS.ARX.md").write_text("# AGENTS")
+        return source
+
+    def test_warns_on_empty_agent_tools_dir(self, tmp_path, runner, source_empty_agents):
+        """Should warn when agent-tools template dir exists but has no files."""
+        target = tmp_path / "project"
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(target),
+                "--no-docs",
+                "--agentrx-source", str(source_empty_agents),
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Warning" in result.output
+        assert "contains no files" in result.output
+
+    def test_warns_on_missing_agent_tools_dir(self, tmp_path, runner, source_missing_agents):
+        """Should warn when agent-tools template dir does not exist."""
+        target = tmp_path / "project"
+        result = runner.invoke(
+            cli,
+            [
+                "init",
+                str(target),
+                "--no-docs",
+                "--agentrx-source", str(source_missing_agents),
+                "--agents-dir", "_agents",
+                "--target-proj", "_project",
+                "--proj-docs", "_project/docs",
+                "--work-docs", "_project/docs/agentrx",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Warning" in result.output
+        assert "not found" in result.output
+
+    def test_still_creates_skeleton_dirs_when_empty(self, tmp_path, source_empty_agents):
+        """Even with empty source, skeleton dirs should still be created."""
+        target = tmp_path / "project"
+        _run_init(
+            target_dir=str(target),
+            link_arx=False,
+            verbose=False,
+            dry_run=False,
+            agentrx_source=str(source_empty_agents),
+            agents_dir="_agents",
+            target_proj="_project",
+            proj_docs="_project/docs",
+            work_docs="_project/docs/agentrx",
+            data_path=None,
+            install_docs=False,
+        )
+        agents = target / "_agents"
+        assert agents.exists()
+        for sub in ["commands", "skills", "scripts", "hooks", "agents"]:
+            assert (agents / sub).exists()
