@@ -1,4 +1,4 @@
-# [Component / Subsystem] — Deep Dive
+# [Facet (Component, Subsystem, Layer)] — Deep Dive
 
 > *Detailed architecture notes for a specific component or cross-cutting concern.*
 

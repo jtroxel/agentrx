@@ -13,7 +13,7 @@ import click
 from agentrx.render import build_context, read_stdin_if_available, render_file
 
 # Default directories
-DEFAULT_PROMPTS_DIR = "_project/docs/agentrx/vibes"
+_DEFAULT_VIBES_SUBDIR = "vibes"
 DEFAULT_HISTORY_SUBDIR = "history"
 
 
@@ -22,18 +22,28 @@ class PromptError(Exception):
     pass
 
 
+def get_work_docs_dir() -> Path:
+    """Get the ARX_WORK_DOCS directory (required env var)."""
+    work_docs = os.environ.get("ARX_WORK_DOCS")
+    if not work_docs:
+        raise PromptError(
+            "ARX_WORK_DOCS environment variable is not set.\n"
+            "Set it to the project docs directory (e.g. export ARX_WORK_DOCS=docs/agentrx)."
+        )
+    return Path(work_docs)
+
+
 def get_prompts_dir() -> Path:
-    """Get the prompts directory from env or default."""
-    prompts_dir = os.environ.get("ARX_PROMPTS", DEFAULT_PROMPTS_DIR)
-    return Path(prompts_dir)
+    """Get the vibes/prompts directory under ARX_WORK_DOCS."""
+    return get_work_docs_dir() / _DEFAULT_VIBES_SUBDIR
 
 
 def get_history_dir() -> Path:
-    """Get the history directory from env or default."""
+    """Get the history directory under ARX_WORK_DOCS."""
     history_dir = os.environ.get("ARX_HISTORY")
     if history_dir:
         return Path(history_dir)
-    return get_prompts_dir() / DEFAULT_HISTORY_SUBDIR
+    return get_work_docs_dir() / DEFAULT_HISTORY_SUBDIR
 
 
 def find_most_recent_prompt(prompts_dir: Path) -> Optional[Path]:
@@ -90,6 +100,7 @@ def prompt():
 
 @prompt.command("do")
 @click.argument("prompt_file", required=False, type=click.Path())
+@click.argument("user_prompt_text", required=False)
 @click.option("-d", "--data", "data_file", type=click.Path(exists=True),
               help="Path to JSON/YAML data file for context")
 @click.option("-D", "--data-json", "data_json",
@@ -104,6 +115,7 @@ def prompt():
               help="Show detailed output")
 def do_prompt(
     prompt_file: Optional[str],
+    user_prompt_text: Optional[str],
     data_file: Optional[str],
     data_json: Optional[str],
     history: bool,
@@ -114,7 +126,11 @@ def do_prompt(
     """Execute a prompt with optional data context.
 
     If PROMPT_FILE is not specified, uses the most recent .md file
-    in the ARX_PROMPTS directory.
+    in $ARX_WORK_DOCS/vibes.
+
+    USER_PROMPT_TEXT is an optional inline instruction appended after the
+    rendered prompt.  It is also injected into the data context as
+    ``user_prompt`` so templates can reference it via ``<ARX [[user_prompt]] />``.
 
     Data can be provided via --data file, --data-json inline string,
     or piped through stdin.  When multiple sources are given they are
@@ -131,15 +147,30 @@ def do_prompt(
         # Execute with inline JSON context
         arx prompt do my_prompt.md --data-json '{"name": "Alice"}'
 
+        # Execute with inline user prompt text
+        arx prompt do my_prompt.md "What is the status of the project?"
+
+        # Execute most recent prompt with user instruction (no prompt file)
+        arx prompt do "Give them another try."
+
         # Pipe data from another command
         cat data.json | arx prompt do my_prompt.md
 
         # Execute and log to history
         arx prompt do my_prompt.md --history
     """
+    # Disambiguate: if only one positional arg is given and it doesn't look
+    # like a file path (no extension, not an existing file), treat it as
+    # user_prompt_text rather than prompt_file.
+    if prompt_file and not user_prompt_text:
+        p = Path(prompt_file)
+        if not p.exists() and not p.suffix:
+            user_prompt_text = prompt_file
+            prompt_file = None
     try:
         _do_prompt_impl(
             prompt_file=prompt_file,
+            user_prompt_text=user_prompt_text,
             data_file=data_file,
             data_json=data_json,
             history=history,
@@ -152,19 +183,19 @@ def do_prompt(
         sys.exit(1)
 
 
-def _resolve_prompt_path(prompt_file: Optional[str], prompts_dir: Path) -> Path:
+def _resolve_prompt_path(prompt_file: Optional[str], prompts_dir: Optional[Path]) -> Path:
     """Resolve prompt_file arg to an existing Path."""
     if prompt_file:
         p = Path(prompt_file)
-        if not p.is_absolute() and not p.exists():
+        if not p.is_absolute() and not p.exists() and prompts_dir:
             candidate = prompts_dir / prompt_file
             if candidate.exists():
                 return candidate
         return p
-    if not prompts_dir.exists():
+    if prompts_dir is None or not prompts_dir.exists():
         raise PromptError(
             f"Prompts directory not found: {prompts_dir}\n"
-            "Set ARX_PROMPTS environment variable or specify a prompt file."
+            "Ensure ARX_WORK_DOCS is set and $ARX_WORK_DOCS/vibes exists, or specify a prompt file."
         )
     p = find_most_recent_prompt(prompts_dir)
     if not p:
@@ -186,6 +217,7 @@ def _build_data_source_label(data_file: Optional[str], data_json: Optional[str],
 
 def _do_prompt_impl(
     prompt_file: Optional[str],
+    user_prompt_text: Optional[str],
     data_file: Optional[str],
     data_json: Optional[str],
     history: bool,
@@ -194,7 +226,10 @@ def _do_prompt_impl(
     verbose: bool,
 ) -> None:
     """Implementation of prompt do command."""
-    prompts_dir = get_prompts_dir()
+    # Only resolve prompts_dir (requires ARX_WORK_DOCS) when no explicit file given
+    prompts_dir: Optional[Path] = None
+    if not prompt_file:
+        prompts_dir = get_prompts_dir()
     prompt_path = _resolve_prompt_path(prompt_file, prompts_dir)
 
     if not prompt_path.exists():
@@ -207,17 +242,24 @@ def _do_prompt_impl(
     except ValueError as exc:
         raise PromptError(str(exc)) from exc
 
+    # Inject user_prompt_text into data context so templates can reference it
+    if user_prompt_text:
+        data.setdefault("user_prompt", user_prompt_text)
+
     data_source = _build_data_source_label(data_file, data_json, stdin_data)
 
     # Dry run
     if dry_run:
-        _print_dry_run(prompt_path, data_source, data, output_file, history)
+        _print_dry_run(prompt_path, data_source, data, output_file, history,
+                       user_prompt_text=user_prompt_text)
         return
 
     if verbose:
         click.secho(f"Executing prompt: {prompt_path}", fg="cyan")
         if data_source:
             click.secho(f"With data from: {data_source}", fg="cyan")
+        if user_prompt_text:
+            click.secho(f"User instruction: {user_prompt_text}", fg="cyan")
 
     # Render template at the "do" phase
     try:
@@ -225,7 +267,11 @@ def _do_prompt_impl(
     except Exception as exc:
         raise PromptError(f"Render error: {exc}") from exc
 
-    output_content = rendered
+    # Append user prompt text if provided and not already handled by template
+    if user_prompt_text:
+        output_content = rendered.rstrip("\n") + f"\n\n{user_prompt_text}\n"
+    else:
+        output_content = rendered
 
     # Write output
     _write_output(output_content, output_file, verbose)
@@ -251,12 +297,15 @@ def _print_dry_run(
     data: dict,
     output_file: Optional[str],
     history: bool,
+    user_prompt_text: Optional[str] = None,
 ) -> None:
     """Print dry-run summary."""
     prompt_content = prompt_path.read_text(encoding="utf-8")
     click.secho("=== Dry Run ===", fg="cyan", bold=True)
     click.echo(f"Prompt file: {prompt_path}")
     click.echo(f"Data source: {data_source or 'none'}")
+    if user_prompt_text:
+        click.echo(f"User instruction: {user_prompt_text}")
     if data:
         click.echo(f"Data keys: {list(data.keys())}")
     click.echo(f"Output: {output_file or 'stdout'}")
@@ -543,7 +592,7 @@ def _new_prompt_impl(
             prompt_text or (template_path.stem if template_path else "prompt")
         )
     )
-    work_docs = Path(os.environ.get("ARX_WORK_DOCS", get_prompts_dir()))
+    work_docs = get_work_docs_dir()
     out_path = _build_output_path(work_docs, out_subdir, out_name)
 
     # Stage 4: dry-run preview
@@ -581,17 +630,21 @@ def _print_new_dry_run(
 @prompt.command("list")
 @click.option("-n", "--limit", default=10, help="Number of prompts to show")
 @click.option("--dir", "prompts_dir", type=click.Path(exists=True),
-              help="Prompts directory (default: ARX_PROMPTS)")
+              help="Prompts directory (default: $ARX_WORK_DOCS/vibes)")
 def list_prompts(limit: int, prompts_dir: Optional[str]):
     """List recent prompt files.
 
-    Shows the most recent prompt files in the prompts directory,
+    Shows the most recent prompt files in $ARX_WORK_DOCS/vibes,
     sorted by modification time.
     """
     if prompts_dir:
         target_dir = Path(prompts_dir)
     else:
-        target_dir = get_prompts_dir()
+        try:
+            target_dir = get_prompts_dir()
+        except PromptError as e:
+            click.secho(f"Error: {e}", fg="red", err=True)
+            sys.exit(1)
 
     if not target_dir.exists():
         click.secho(f"Prompts directory not found: {target_dir}", fg="red", err=True)

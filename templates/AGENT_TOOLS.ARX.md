@@ -9,10 +9,11 @@ This file indexes key context documents for AI coding agents.
 ## Commands Reference
 | Command | Description |
 |---------|-------------|
-| `/agentrx:trial-init` | argument-hint: <approach|document-path> |
-| `/agentrx:prompt-new` | argument-hint: <short_name> ,out-dir |
-| `/agentrx:trial-status` | argument-hint: |
-| `/agentrx:trial-work` | argument-hint: <document-path> |
+| `/arx:trial-init` | argument-hint: <approach|document-path> |
+| `/arx:prompt-new` | argument-hint: <short_name> ,out-dir |
+| `/arx:trial-status` | argument-hint: |
+| `/arx:trial-work` | argument-hint: <document-path> |
+| `/arx:adapt-workspace` | argument-hint: <coding-agent> |
 
 ## Project Structure
 ```
