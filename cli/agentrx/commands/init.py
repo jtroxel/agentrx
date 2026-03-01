@@ -90,10 +90,20 @@ DEFAULT_WORK_DOCS   = "_project/docs/agentrx"
 # Sub-category names under the agent-tools directory
 AGENT_SUBDIRS = ["commands", "skills", "scripts", "hooks", "agents"]
 
-# Name of the agents-tools template subdir inside templates/
-# This subtree is routed to ARX_AGENT_TOOLS instead of the project root.
-AGENTS_TEMPLATE_SUBDIR = "_arx_agent_tools.arx"
-DOCS_TEMPLATE_SUBDIR   = "_arx_target_docs.arx"
+# Template subdirectory names inside templates/.
+# Each subdir maps 1-to-1 onto one ARX_* destination variable:
+#   _arx_workspace_root.arx/  → ARX_WORKSPACE_ROOT (workspace root ./),  .ARX. stripped
+#   _arx_agent_tools.arx/     → ARX_AGENT_TOOLS    (copy or symlink)
+#   _arx_proj_docs.arx/       → ARX_PROJ_DOCS      (optional docs skeleton)
+#   _arx_work_docs.arx/       → ARX_WORK_DOCS      (working docs subdirs)
+WORKSPACE_ROOT_TEMPLATE_SUBDIR = "_arx_workspace_root.arx"
+AGENTS_TEMPLATE_SUBDIR         = "_arx_agent_tools.arx"
+PROJ_DOCS_TEMPLATE_SUBDIR      = "_arx_proj_docs.arx"
+WORK_DOCS_TEMPLATE_SUBDIR      = "_arx_work_docs.arx"
+
+# Backward-compat alias; external code / tests that import DOCS_TEMPLATE_SUBDIR
+# still work while we migrate.
+DOCS_TEMPLATE_SUBDIR = PROJ_DOCS_TEMPLATE_SUBDIR
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +519,7 @@ def _setup_docs_dir(docs_path: Path, runner: _Runner) -> None:
     already_exists = docs_path.exists()
     runner.mkdir(docs_path)
     if not already_exists:
-        for sub in ("deltas", "vibes", "history"):
+        for sub in ("deltas", "vibes", "history", "sessions", "tasks_tracking"):
             runner.mkdir(docs_path / sub)
 
 
@@ -535,14 +545,6 @@ def _write_template_item(item: Path, dst: Path, context: Dict[str, Any],
                 click.echo(f"    [OK] binary {dst}")
 
 
-def _route_template(rel: Path, root: Path, agents_path: Path,
-                    agents_subdir: str) -> tuple[Path, Path]:
-    """Return (dst_base, rel_in_dst) for a template file."""
-    if rel.parts[0] == agents_subdir:
-        return agents_path, rel.relative_to(agents_subdir)
-    return root, rel
-
-
 def _templates_display(templates_dir: Path, agentrx_source: Optional[str]) -> Path:
     """Return a short display path for the templates directory header."""
     if agentrx_source:
@@ -564,16 +566,16 @@ def _install_docs_skeleton(
 ) -> bool:
     """Copy docs skeleton templates into *proj_docs_path*.
 
-    Files come from ``templates/DOCS_TEMPLATE_SUBDIR/``.  The ``.ARX.`` marker
-    is stripped from filenames on the way out (same convention as root-level
-    templates).  Already-existing files are skipped (``skip_existing=True``).
+    Files come from ``templates/PROJ_DOCS_TEMPLATE_SUBDIR/``.  The ``.ARX.``
+    marker is stripped from filenames on the way out.  Already-existing files
+    are skipped (``skip_existing=True``).
 
     Returns True if the skeleton source directory was found, False otherwise.
     """
     templates_dir = _find_templates_dir(agentrx_source)
     if not templates_dir:
         return False
-    docs_src = templates_dir / DOCS_TEMPLATE_SUBDIR
+    docs_src = templates_dir / PROJ_DOCS_TEMPLATE_SUBDIR
     if not docs_src.exists():
         return False
 
@@ -591,7 +593,7 @@ def _install_docs_skeleton(
         _write_template_item(
             item, dst, context, runner,
             label=str(dst_rel),
-            src_display=Path("templates") / DOCS_TEMPLATE_SUBDIR / rel,
+            src_display=Path("templates") / PROJ_DOCS_TEMPLATE_SUBDIR / rel,
         )
     return True
 
@@ -605,7 +607,7 @@ def _preview_docs_skeleton(
     if not templates_dir:
         click.echo("  (no docs skeleton found)")
         return
-    docs_src = templates_dir / DOCS_TEMPLATE_SUBDIR
+    docs_src = templates_dir / PROJ_DOCS_TEMPLATE_SUBDIR
     if not docs_src.exists():
         click.echo(f"  (docs template dir not found: {docs_src})")
         return
@@ -625,55 +627,79 @@ def _preview_docs_skeleton(
         click.echo(f"  {indent}{marker}{dst_rel.name}")
 
 
-def _copy_templates(root: Path, agents_path: Path,
-                    agentrx_source: Optional[str],
-                    context: Dict[str, Any], runner: _Runner,
-                    link_arx: bool = False) -> None:
-    """Process templates/ and route results to the correct destination.
+def _copy_templates(
+    root: Path,
+    agents_path: Path,
+    work_docs_path: Path,
+    agentrx_source: Optional[str],
+    context: Dict[str, Any],
+    runner: _Runner,
+    link_arx: bool = False,
+) -> None:
+    """Process templates/ and route each subdir to its ARX_* destination.
 
-    Templates under AGENTS_TEMPLATE_SUBDIR/ are routed to *agents_path*
-    (populating ARX_AGENT_TOOLS per README spec).  In link mode that subtree
-    is skipped because _setup_agent_tools_link already created symlinks for it.
-    All other templates are routed to *root*.
-    .git and OS junk paths are skipped unconditionally.
+    Routing table (template subdir → destination, strip_arx, arx_only):
+      WORKSPACE_ROOT_TEMPLATE_SUBDIR → *root*          strip=True  arx_only=True
+      AGENTS_TEMPLATE_SUBDIR         → *agents_path*   strip=False arx_only=False
+      WORK_DOCS_TEMPLATE_SUBDIR      → *work_docs_path* strip=True arx_only=False
+      PROJ_DOCS_TEMPLATE_SUBDIR      → skipped (handled by _install_docs_skeleton)
+
+    strip=True  : strip .ARX./.arx. marker from destination filename.
+    arx_only=True: skip files that lack the .ARX./.arx. marker (workspace-root
+                   bare files are templates-dir documentation, not installed).
+    .git and OS junk paths are always skipped.
     """
     templates_dir = _find_templates_dir(agentrx_source)
     if not templates_dir:
         return
 
-    tmpl_disp = _templates_display(templates_dir, agentrx_source)
+    # (destination_base, strip_marker, arx_only)
+    routing: dict[str, tuple[Path, bool, bool]] = {
+        WORKSPACE_ROOT_TEMPLATE_SUBDIR: (root,           True,  True),
+        AGENTS_TEMPLATE_SUBDIR:         (agents_path,    False, False),
+        WORK_DOCS_TEMPLATE_SUBDIR:      (work_docs_path, True,  False),
+    }
+    # PROJ_DOCS_TEMPLATE_SUBDIR is handled exclusively by _install_docs_skeleton
 
+    tmpl_disp = _templates_display(templates_dir, agentrx_source)
     click.echo()
     click.secho(f"Templates  ({tmpl_disp}):", fg="cyan")
+
     for item in sorted(templates_dir.rglob("*")):
         if item.is_dir():
             continue
         rel = item.relative_to(templates_dir)
         if _is_junk(rel):
             continue
-        in_agents_subdir = rel.parts[0] == AGENTS_TEMPLATE_SUBDIR
-        in_docs_subdir = rel.parts[0] == DOCS_TEMPLATE_SUBDIR
-        # Docs templates are handled separately by _install_docs_skeleton;
-        # skip them here to avoid creating a spurious directory at the root.
-        if in_docs_subdir:
+
+        # Must be inside a known routing subdir
+        top = rel.parts[0] if rel.parts else ""
+        if top not in routing:
+            continue  # unknown subdir, or bare root file — skip
+
+        # In link mode the agents subtree is already symlinked; skip copying
+        if link_arx and top == AGENTS_TEMPLATE_SUBDIR:
             continue
-        # In link mode, skip the agents subtree — it is already symlinked
-        if link_arx and in_agents_subdir:
+
+        dst_base, do_strip, arx_only = routing[top]
+        rel_in_dst = rel.relative_to(top)
+
+        # arx_only: skip files without .ARX./.arx. marker (templates-dir docs)
+        has_arx = ".ARX." in rel.name or ".arx." in rel.name or rel.name.endswith(".arx")
+        if arx_only and not has_arx:
             continue
-        # Root-level files must carry the .ARX. / .arx. marker to be installed;
-        # bare files (e.g. README.md) are templates-dir documentation only.
-        if not in_agents_subdir and ".ARX." not in rel.name and ".arx." not in rel.name:
-            continue
-        dst_base, rel_in_dst = _route_template(rel, root, agents_path, AGENTS_TEMPLATE_SUBDIR)
-        # Strip .ARX. / .arx. marker from root-level template destination filenames
-        if not in_agents_subdir:
-            stripped_name = _strip_arx_marker(rel_in_dst.name)
-            if stripped_name != rel_in_dst.name:
-                rel_in_dst = rel_in_dst.parent / stripped_name
+
+        if do_strip and has_arx:
+            stripped = _strip_arx_marker(rel_in_dst.name)
+            # Handle .arx suffix files (e.g. .cursorrules.arx → .cursorrules)
+            if stripped == rel_in_dst.name and rel_in_dst.name.endswith(".arx"):
+                stripped = rel_in_dst.name[: -len(".arx")]
+            if stripped != rel_in_dst.name:
+                rel_in_dst = rel_in_dst.parent / stripped
+
         dst = dst_base / rel_in_dst
         if dst.parent != dst_base and not dst.parent.exists():
             runner.mkdir(dst.parent)
-        # src_display uses templates/<rel> so dry-run shows "from templates/..."
         _write_template_item(item, dst, context, runner,
                              label=str(rel_in_dst),
                              src_display=Path("templates") / rel)
@@ -873,18 +899,26 @@ def _run_init(
     _setup_docs_dir(work_docs_path, runner)
 
     # ── copy / process templates ──────────────────────────────────────────────
-    _copy_templates(root, agents_path, agentrx_source, context, runner, link_arx=link_arx)
+    _copy_templates(root, agents_path, work_docs_path, agentrx_source, context, runner,
+                    link_arx=link_arx)
 
     # ── root bootstrap files ──────────────────────────────────────────────────
-    # AGENTS.md is installed by _copy_templates (from templates/AGENTS.ARX.md).
-    # CLAUDE.md has no .ARX. template counterpart yet; write from inline
-    # default only if absent.
+    # AGENTS.md, AGENT_TOOLS.md, and .cursorrules come from
+    # _arx_workspace_root.arx/ via _copy_templates above.
+    # CLAUDE.md is also in _arx_workspace_root.arx/CLAUDE.ARX.md; fall back to
+    # the inline default only when no AGENTRX_SOURCE was provided.
     click.echo()
     click.secho("Bootstrap files:", fg="cyan")
-    for fname, content in [
-        ("CLAUDE.md", CLAUDE_MD_TEMPLATE),
-    ]:
-        runner.write(root / fname, content, skip_existing=True, label=fname)
+    templates_dir_bs = _find_templates_dir(agentrx_source)
+    claude_from_template = (
+        templates_dir_bs is not None
+        and (templates_dir_bs / WORKSPACE_ROOT_TEMPLATE_SUBDIR / "CLAUDE.ARX.md").exists()
+    )
+    if not claude_from_template:
+        for fname, content in [
+            ("CLAUDE.md", CLAUDE_MD_TEMPLATE),
+        ]:
+            runner.write(root / fname, content, skip_existing=True, label=fname)
 
     # ── .env (always written / updated) ──────────────────────────────────────
     click.echo()
@@ -913,7 +947,7 @@ def _run_init(
 
     # ── optional docs skeleton ────────────────────────────────────────────────
     templates_dir = _find_templates_dir(agentrx_source)
-    docs_src = (templates_dir / DOCS_TEMPLATE_SUBDIR) if templates_dir else None
+    docs_src = (templates_dir / PROJ_DOCS_TEMPLATE_SUBDIR) if templates_dir else None
     if docs_src and docs_src.exists():
         click.echo("─" * 44)
         click.secho("Optional: Documentation Skeleton", fg="cyan", bold=True)

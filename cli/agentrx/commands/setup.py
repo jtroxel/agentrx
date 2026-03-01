@@ -8,6 +8,13 @@ from typing import Optional, List
 
 VALID_PROVIDERS = ["claude", "cursor", "opencode", "all"]
 
+# Map source directory names to the namespace exposed to coding agents.
+# The source templates use "agentrx" internally but the user-facing
+# slash-command prefix is "/arx:".
+NAMESPACE_ALIASES = {
+    "agentrx": "arx",
+}
+
 
 def find_workspace_root(start_path: Path) -> Optional[Path]:
     """Find project root by looking for _agents or .claude directory."""
@@ -66,7 +73,8 @@ def setup_claude(root: Path, agents_dir: Path, clean: bool, verbose: bool):
     if commands_dir.exists():
         for namespace_dir in commands_dir.iterdir():
             if namespace_dir.is_dir():
-                namespace = namespace_dir.name
+                src_name = namespace_dir.name
+                namespace = NAMESPACE_ALIASES.get(src_name, src_name)
                 link_path = claude_dir / "commands" / namespace
                 create_symlink(link_path, namespace_dir)
                 click.secho(f"  [OK] commands/{namespace}", fg="green")
@@ -82,7 +90,8 @@ def setup_claude(root: Path, agents_dir: Path, clean: bool, verbose: bool):
     if skills_dir.exists():
         for namespace_dir in skills_dir.iterdir():
             if namespace_dir.is_dir():
-                namespace = namespace_dir.name
+                src_name = namespace_dir.name
+                namespace = NAMESPACE_ALIASES.get(src_name, src_name)
                 link_path = claude_dir / "skills" / namespace
                 create_symlink(link_path, namespace_dir)
                 click.secho(f"  [OK] skills/{namespace}", fg="green")
@@ -99,13 +108,46 @@ def setup_claude(root: Path, agents_dir: Path, clean: bool, verbose: bool):
         create_symlink(link_path, hooks_dir)
         click.secho("  [OK] hooks", fg="green")
 
-    # Link settings
+    # Merge settings (don't overwrite — preserve existing MCP config, etc.)
     settings_file = agents_dir / "settings.local.json"
     if settings_file.exists():
-        click.secho("Setting up settings link...", fg="cyan")
+        click.secho("Merging settings...", fg="cyan")
         link_path = claude_dir / "settings.local.json"
-        create_symlink(link_path, settings_file)
-        click.secho("  [OK] settings.local.json", fg="green")
+
+        # Load ARX settings to merge in
+        arx_settings = json.loads(settings_file.read_text())
+
+        # Load existing settings if present (follow symlinks to read real content)
+        existing_settings = {}
+        if link_path.exists() or link_path.is_symlink():
+            try:
+                existing_settings = json.loads(link_path.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+            # If it's a symlink, remove it — we'll write a real file
+            if link_path.is_symlink():
+                link_path.unlink()
+
+        # Merge permissions: combine allow/deny lists, dedup
+        existing_perms = existing_settings.get("permissions", {})
+        arx_perms = arx_settings.get("permissions", {})
+
+        existing_allow = existing_perms.get("allow", [])
+        arx_allow = arx_perms.get("allow", [])
+        merged_allow = list(dict.fromkeys(existing_allow + arx_allow))
+
+        existing_deny = existing_perms.get("deny", [])
+        arx_deny = arx_perms.get("deny", [])
+        merged_deny = list(dict.fromkeys(existing_deny + arx_deny))
+
+        # Build merged settings: start with existing, overlay ARX, set merged perms
+        merged = {**existing_settings}
+        merged["permissions"] = {"allow": merged_allow}
+        if merged_deny:
+            merged["permissions"]["deny"] = merged_deny
+
+        link_path.write_text(json.dumps(merged, indent=2) + "\n")
+        click.secho("  [OK] settings.local.json (merged)", fg="green")
 
     click.secho("Claude Code setup complete!", fg="green")
 

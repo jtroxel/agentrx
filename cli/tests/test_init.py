@@ -20,6 +20,10 @@ from agentrx.commands.init import (
     DEFAULT_PROJECT_DIR,
     DEFAULT_WORK_DOCS,
     AGENTS_TEMPLATE_SUBDIR,
+    WORKSPACE_ROOT_TEMPLATE_SUBDIR,
+    PROJ_DOCS_TEMPLATE_SUBDIR,
+    WORK_DOCS_TEMPLATE_SUBDIR,
+    # Backward-compat alias — tests that still reference DOCS_TEMPLATE_SUBDIR work
     DOCS_TEMPLATE_SUBDIR,
 )
 
@@ -42,7 +46,7 @@ def mock_source(tmp_path):
     source = tmp_path / "agentrx_source"
     source.mkdir()
 
-    # Create templates structure (matching the actual layout)
+    # Create templates structure (matching the actual 4-subdir layout)
     templates = source / "templates"
     templates.mkdir()
 
@@ -54,9 +58,12 @@ def mock_source(tmp_path):
         # Add a sample file
         (path / "sample.md").write_text(f"# Sample {subdir}")
 
-    # Create root-level template files
-    (templates / "AGENTS.ARX.md").write_text("# AGENTS Template")
-    (templates / "AGENT_TOOLS.ARX.md").write_text("# Agent Tools Template")
+    # Workspace-root templates (now under _arx_workspace_root.arx/)
+    ws_root_tmpl = templates / WORKSPACE_ROOT_TEMPLATE_SUBDIR
+    ws_root_tmpl.mkdir(parents=True)
+    (ws_root_tmpl / "AGENTS.ARX.md").write_text("# AGENTS Template")
+    (ws_root_tmpl / "AGENT_TOOLS.ARX.md").write_text("# Agent Tools Template")
+    (ws_root_tmpl / "CLAUDE.ARX.md").write_text("# CLAUDE Template")
 
     return source
 
@@ -513,7 +520,7 @@ class TestDocsSkeletonInstall:
     def fake_arx_source(self, tmp_path):
         """Create a fake AGENTRX_SOURCE directory with a docs skeleton template."""
         src = tmp_path / "agentrx-src"
-        docs_tmpl = src / "templates" / DOCS_TEMPLATE_SUBDIR
+        docs_tmpl = src / "templates" / PROJ_DOCS_TEMPLATE_SUBDIR
         docs_tmpl.mkdir(parents=True)
         (docs_tmpl / "README.ARX.md").write_text("# Docs for <ARX [[project_name]] />\n")
         (docs_tmpl / "Product.ARX.md").write_text("# Product\n")
@@ -542,10 +549,10 @@ class TestDocsSkeletonInstall:
         assert not (proj_docs / "README.ARX.md").exists()
 
     def test_install_docs_skeleton_returns_false_when_no_template(self, tmp_path):
-        """_install_docs_skeleton() returns False when DOCS_TEMPLATE_SUBDIR is absent."""
+        """_install_docs_skeleton() returns False when PROJ_DOCS_TEMPLATE_SUBDIR is absent."""
         proj_docs = tmp_path / "docs"
         proj_docs.mkdir()
-        # Source has a templates/ dir but no _arx_target_docs.arx/ subdir
+        # Source has a templates/ dir but no _arx_proj_docs.arx/ subdir
         fake_src = tmp_path / "no-docs-src"
         (fake_src / "templates").mkdir(parents=True)
 
@@ -706,8 +713,13 @@ class TestDocsTemplateRouting:
             p.mkdir(parents=True)
             (p / "sample.md").write_text(f"# {sub}")
 
-        # Docs templates (mix of .ARX. and plain filenames, just like real repo)
-        docs = templates / DOCS_TEMPLATE_SUBDIR
+        # Workspace-root templates (under _arx_workspace_root.arx/)
+        ws_root = templates / WORKSPACE_ROOT_TEMPLATE_SUBDIR
+        ws_root.mkdir(parents=True)
+        (ws_root / "AGENTS.ARX.md").write_text("# AGENTS")
+
+        # Proj-docs templates (mix of .ARX. and plain filenames, just like real repo)
+        docs = templates / PROJ_DOCS_TEMPLATE_SUBDIR
         docs.mkdir(parents=True)
         (docs / "README.ARX.md").write_text("# README")
         (docs / "Product.ARX.md").write_text("# Product")
@@ -717,13 +729,10 @@ class TestDocsTemplateRouting:
         (features / "feature.ARX.md").write_text("# Feature")
         (features / "CONTEXT.md").write_text("# Context")
 
-        # Root-level templates
-        (templates / "AGENTS.ARX.md").write_text("# AGENTS")
-
         return source
 
     def test_no_spurious_docs_dir_at_root(self, tmp_path, source_with_docs):
-        """_copy_templates must not create _arx_target_docs.arx/ at workspace root."""
+        """_copy_templates must not create _arx_proj_docs.arx/ at workspace root."""
         target = tmp_path / "project"
         _run_init(
             target_dir=str(target),

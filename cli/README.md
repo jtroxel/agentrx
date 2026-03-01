@@ -95,10 +95,19 @@ arx init \
 | `ARX_AGENT_TOOLS` missing | `--link-arx` | Skeleton dirs created; each `agentrx/` leaf symlinked to source. |
 | `ARX_TARGET_PROJ` missing | any | Created (with `src/` inside). |
 | `ARX_PROJ_DOCS` missing | any | Created. |
-| `ARX_WORK_DOCS` missing | any | Created (with `deltas/`, `vibes/`, `history/`). |
+| `ARX_WORK_DOCS` missing | any | Created (with `deltas/`, `sessions/`, `tasks_tracking/`, `vibes/`). |
 
 ### Root files written
-Root-level `*.ARX.*` templates from `templates/` are installed with the `.ARX.` segment stripped (e.g. `AGENTS.ARX.md` → `AGENTS.md`). Each file is written only if absent.
+Each `templates/_arx_<name>.arx/` subdirectory maps to one `ARX_*` destination:
+
+| Template subdir | Destination | Behaviour |
+|---|---|---|
+| `_arx_workspace_root.arx/` | `$ARX_WORKSPACE_ROOT` | `.ARX.` stripped; only installed if absent |
+| `_arx_agent_tools.arx/` | `$ARX_AGENT_TOOLS` | Copied as-is (or symlinked with `--link-arx`) |
+| `_arx_work_docs.arx/` | `$ARX_WORK_DOCS` | Always copied |
+| `_arx_proj_docs.arx/` | `$ARX_PROJ_DOCS` | Optional; prompted interactively (or `--docs`/`--no-docs`) |
+
+Workspace-root files (`AGENTS.md`, `CLAUDE.md`, `AGENT_TOOLS.md`, `.cursorrules`) come from `_arx_workspace_root.arx/` and are written only when absent.
 
 ### `.env`
 Always written/updated with the six `ARX_*` variables.

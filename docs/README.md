@@ -23,7 +23,7 @@ When "installed" in a project, AgentRx sets up and uses several environment vari
 
 | Variable | CLI flag | Default | Description |
 |---|---|---|---|
-| `AGENTRX_SOURCE` | `--agentrx-source` | _(none)_ | Path to the `agentrx-src` clone. Required for `--link-arx`; optional for copy. |
+| `AGENTRX_SOURCE` | `--agentrx-source` | _(none)_ | Path to the `agentrx-src` clone. Used to copy or link templates. |
 | `ARX_WORKSPACE_ROOT` | _(positional)_ | CWD | Workspace root. Always set to wherever `arx init` runs. |
 | `ARX_AGENT_TOOLS` | `--agents-dir` | `$ARX_WORKSPACE_ROOT/_agents` | Agent assets directory. |
 | `ARX_TARGET_PROJ` | `--target-proj` | `$ARX_WORKSPACE_ROOT/_project` | Target project (source code) directory. |
@@ -50,14 +50,28 @@ agentrx-src/                      # AGENTRX_SOURCE — clone once, point project
 │   │       └── prompt.py         # arx prompt do/new/list
 │   └── README.md                 # CLI quickstart and full option reference
 ├── templates/
-│   ├── AGENTS.ARX.md             # → $ARX_WORKSPACE_ROOT/AGENTS.md
-│   ├── AGENT_TOOLS.ARX.md        # → $ARX_WORKSPACE_ROOT/AGENT_TOOLS.md
-│   ├── _arx_agent_tools.arx/     # → $ARX_AGENT_TOOLS/ (copy or link)
+│   ├── _arx_workspace_root.arx/  # → $ARX_WORKSPACE_ROOT/  (.ARX. stripped)
+│   │   ├── AGENTS.ARX.md         #   → AGENTS.md
+│   │   ├── AGENT_TOOLS.ARX.md    #   → AGENT_TOOLS.md
+│   │   ├── CLAUDE.ARX.md         #   → CLAUDE.md
+│   │   └── .cursorrules.arx      #   → .cursorrules
+│   ├── _arx_agent_tools.arx/     # → $ARX_AGENT_TOOLS/  (copy or link)
 │   │   ├── commands/agentrx/
 │   │   ├── skills/agentrx/
 │   │   ├── scripts/agentrx/
 │   │   ├── hooks/agentrx/
 │   │   └── agents/
+│   ├── _arx_proj_docs.arx/       # → $ARX_PROJ_DOCS/  (optional, prompted)
+│   │   ├── Architecture.ARX.md
+│   │   ├── Product.ARX.md
+│   │   ├── README.ARX.md
+│   │   ├── features/
+│   │   └── architecture/
+│   ├── _arx_work_docs.arx/       # → $ARX_WORK_DOCS/  (always copied)
+│   │   ├── deltas/
+│   │   ├── sessions/
+│   │   ├── tasks_tracking/
+│   │   └── vibes/
 │   └── README.md                 # Templates directory documentation
 └── docs/
     └── README.md                 # ← you are here, these are up-to-date project docs for  AgentRx.
@@ -79,11 +93,13 @@ After `arx init`, a target project looks like:
 │   └── docs/                # ARX_PROJ_DOCS    — project documentation
 │       └── agentrx/         # ARX_WORK_DOCS    — generated docs and vibes
 │           ├── deltas/
-│           ├── vibes/
-│           └── history/
+│           ├── sessions/
+│           ├── tasks_tracking/
+│           └── vibes/
 ├── AGENTS.md                # Agent startup instructions
+├── AGENT_TOOLS.md           # Context documents index
 ├── CLAUDE.md                # Claude Code guidance
-├── CHAT_START.md            # Session bootstrap
+├── .cursorrules             # Cursor IDE rules (delegates to AGENTS.md)
 └── .env                     # ARX_* variables, sourced by shell / arx commands
 ```
 
@@ -122,12 +138,16 @@ $AGENTRX_SOURCE/bin/init-arx.sh .
 
 ### Template naming convention
 
-Source files in `templates/` use an `.ARX.` marker in the filename to identify them as AgentRx-managed templates:
+Each `templates/_arx_<name>.arx/` subdirectory maps 1-to-1 to an `ARX_*` destination variable:
 
-- **Pattern:** `*.ARX.*` and `*.arx.*`
-- **Installed name:** the `.ARX.` segment is stripped — e.g. `AGENTS.ARX.md` → `AGENTS.md`
-- **Root-level templates** (`templates/*.ARX.*`) install into `$ARX_WORKSPACE_ROOT`
-- **Agent-tools templates** (`templates/_arx_agent_tools.arx/**`) install into `$ARX_AGENT_TOOLS`
+| Template subdir | Destination | Notes |
+|---|---|---|
+| `_arx_workspace_root.arx/` | `$ARX_WORKSPACE_ROOT` | `.ARX.` stripped; bare files skipped |
+| `_arx_agent_tools.arx/` | `$ARX_AGENT_TOOLS` | All files copied as-is (or symlinked with `--link-arx`) |
+| `_arx_work_docs.arx/` | `$ARX_WORK_DOCS` | Always copied |
+| `_arx_proj_docs.arx/` | `$ARX_PROJ_DOCS` | Optional; prompted interactively |
+
+**`.ARX.` marker**: files whose names contain `.ARX.` (or `.arx.`) have the marker stripped on installation — e.g. `AGENTS.ARX.md` → `AGENTS.md`. Files with the `.arx` suffix have the suffix dropped (e.g. `.cursorrules.arx` → `.cursorrules`). Bare files (no marker) inside `_arx_workspace_root.arx/` are treated as templates-dir documentation and are **not** installed.
 
 #### Conflict handling
 
@@ -145,9 +165,9 @@ Source files in `templates/` use an `.ARX.` marker in the filename to identify t
 | `ARX_AGENT_TOOLS` | no (`--link-arx`) | Skeleton created; `agentrx/` leaves symlinked to source |
 | `ARX_TARGET_PROJ` | no | Created (with `src/` inside) |
 | `ARX_PROJ_DOCS` | no | Created |
-| `ARX_WORK_DOCS` | no | Created (with `deltas/`, `vibes/`, `history/`) |
+| `ARX_WORK_DOCS` | no | Created (with `deltas/`, `sessions/`, `tasks_tracking/`, `vibes/`) |
 
-Root-level `*.ARX.*` templates are installed (`.ARX.` stripped) only if absent.
+Root-level workspace files (`AGENTS.md`, `CLAUDE.md`, `AGENT_TOOLS.md`, `.cursorrules`) come from `_arx_workspace_root.arx/` and are installed only if absent.
 `.env` is always written/updated with all six `ARX_*` variables.
 
 ---
