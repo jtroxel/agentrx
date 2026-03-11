@@ -1,4 +1,5 @@
 ---
+name: arx_templating
 arx: skill
 version: 1
 description: ARX templating syntax reference for agents reading and writing template files
@@ -104,7 +105,6 @@ Templates accept data from:
 - **YAML/JSON** - Inline or file-based context
 - **ENV variables** - `[[env.VAR_NAME]]`
 - **Workflow outputs** - Previous step results via `[[step.output]]`
-
 ---
 
 ## Variable Substitution
