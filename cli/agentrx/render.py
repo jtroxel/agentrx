@@ -1,36 +1,15 @@
-"""ARX template renderer.
+"""ARX Template Engine.
 
-Implements the ARX templating syntax described in arx_templating.md.
+Three-step processing pipeline:
+1. Strip YAML front matter (``---`` blocks) — returned separately.
+2. Expand env vars: ``$VAR`` and ``${VAR}`` from ``os.environ``.
+3. Resolve ARX tags:
+   - ``<ARX [[expr]] />``  (variable substitution)
+   - ``<ARX:IF [[expr]]>``...``</ARX:IF>``
+   - ``<ARX:REPLACE agent: name, "prompt">``...``</ARX:REPLACE>``
 
-Processing order
-----------------
-1. Strip YAML front matter (``---`` block) — returned separately.
-2. Expand ``$ENV_VAR`` and ``${ENV_VAR}`` using ``os.environ``.
-3. Resolve ``<ARX [[expr]] />`` variable tags from the *data* dict.
-4. Any tag whose expression cannot be resolved is left **unchanged** in the
-   output so downstream agents can still see and act on it.
-
-Only variable substitution (``[[var]]``, ``[[obj.key]]``, defaults via
-``[[var | "default"]]``) is performed here.  Block/loop/include directives
-are preserved verbatim — full evaluation is agent-side.
-
-Render phases
--------------
-Variable tags accept an optional phase marker **after** ``]]`` and before ``/>``::
-
-    <ARX [[prompt]] :new />        # only substituted during the "new" phase
-    <ARX [[user.name]] :do />      # only substituted during the "do" phase
-    <ARX [[config.version]] />     # eager — substituted at any phase when data present
-
-Pass ``phase="new"`` or ``phase="do"`` (matching ``arx prompt new`` / ``arx prompt do``)
-to ``render()`` / ``render_file()``.  Phase-tagged tags that don't match the
-current phase are **preserved verbatim** so the later phase can still resolve them.
-
-Public API
-----------
-``render(text, data, phase)``  → rendered string
-``render_file(path, data, phase)``  → (front_matter_dict, rendered_string)
-``build_context(data_json, data_file, stdin_json)`` → merged dict
+Phase annotations (``:new``, ``:do``) control *when* expressions resolve.
+Mustache ``{{...}}`` blocks are passed through unchanged.
 """
 
 from __future__ import annotations
@@ -42,249 +21,237 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+import yaml
+
 # ---------------------------------------------------------------------------
 # Front-matter helpers
 # ---------------------------------------------------------------------------
 
-_FM_RE = re.compile(r"^---\r?\n(.+?)\r?\n---\r?\n?", re.DOTALL)
+_FM_RE = re.compile(r"\A---\s*\n(.*?\n)---\s*\n", re.DOTALL)
 
 
-def strip_front_matter(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
-    """Return ``(front_matter_dict_or_None, body)``."""
+def strip_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
+    """Extract YAML front matter from *text*.
+
+    Returns ``(front_matter_dict, body)`` where *body* is everything after the
+    closing ``---``.  If no front matter is present, returns ``({}, text)``.
+    """
     m = _FM_RE.match(text)
     if not m:
-        return None, text
+        return {}, text
     try:
-        import yaml  # type: ignore[import]
         fm = yaml.safe_load(m.group(1)) or {}
-    except Exception:
+    except yaml.YAMLError:
         fm = {}
-    return fm, text[m.end():]
+    return fm, text[m.end() :]
 
 
 # ---------------------------------------------------------------------------
-# Environment variable expansion
+# Environment-variable expansion
 # ---------------------------------------------------------------------------
 
-_ENV_BRACED_RE = re.compile(r"\$\{([A-Za-z_]\w*)\}")
-_ENV_BARE_RE = re.compile(r"\$([A-Za-z_]\w*)")
+_ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _expand_env(text: str) -> str:
-    """Expand ``$VAR`` and ``${VAR}`` from ``os.environ`` (leave unknown as-is)."""
+    """Replace ``$VAR`` and ``${VAR}`` with values from ``os.environ``.
 
-    def _sub(m: re.Match) -> str:
-        return os.environ.get(m.group(1), m.group(0))
+    Unset variables are left as-is.
+    """
 
-    text = _ENV_BRACED_RE.sub(_sub, text)
-    text = _ENV_BARE_RE.sub(_sub, text)
-    return text
+    def _repl(m: re.Match) -> str:
+        name = m.group(1) or m.group(2)
+        return os.environ.get(name, m.group(0))
+
+    return _ENV_RE.sub(_repl, text)
 
 
 # ---------------------------------------------------------------------------
-# ARX variable tag resolution
+# ARX tag resolution
 # ---------------------------------------------------------------------------
 
-# Matches variable tags — NOT block openers/closers/loops/includes.
-# Pattern: <ARX [[ expr ]] [:phase] />
-#   where expr is NOT starting with #, ^, *, @, /  (those are structural tags)
-#   [:phase] is an optional render-phase marker, e.g. :new  :do
+# Matches: <ARX [[expr]] />  or  <ARX [[expr]] :phase />
 _VAR_TAG_RE = re.compile(
-    r"<ARX\s+\[\[\s*(?![#^*@/])(.*?)\s*\]\]\s*(?::(\w+)\s*)?/>",
+    r"<ARX\s+\[\[(.+?)\]\]"       # [[expression]]
+    r"(?:\s+:(\w+))?"              # optional :phase
+    r"\s*/>"                       # self-closing
+)
+
+# Matches: <ARX:IF [[expr]]> ... </ARX:IF>
+_IF_TAG_RE = re.compile(
+    r"<ARX:IF\s+\[\[(.+?)\]\]>"   # opening tag with expression
+    r"(.*?)"                       # body
+    r"</ARX:IF>",                  # closing tag
     re.DOTALL,
 )
 
-_DEFAULT_RE = re.compile(r'^(.*?)\s*\|\s*(.+)$')
+# Matches: <ARX:REPLACE agent: name, "prompt"> ... </ARX:REPLACE>
+_REPLACE_TAG_RE = re.compile(
+    r'<ARX:REPLACE\s+agent:\s*(\S+),\s*"([^"]*)">'  # agent + prompt
+    r"(.*?)"                                          # body
+    r"</ARX:REPLACE>",                                # closing tag
+    re.DOTALL,
+)
 
 
-def _resolve_path(key: str, data: Dict[str, Any]) -> Any:
-    """Dot-notation lookup: ``user.profile.name``.  Returns ``None`` if missing."""
-    parts = key.split(".")
-    node: Any = data
-    for part in parts:
-        if isinstance(node, dict):
-            if part not in node:
-                return None
-            node = node[part]
-        elif isinstance(node, (list, tuple)):
-            try:
-                node = node[int(part)]
-            except (ValueError, IndexError):
-                return None
-        else:
-            return None
-    return node
+def _resolve_expr(expr: str, data: Dict[str, Any]) -> Any:
+    """Evaluate a ``[[...]]`` expression against *data*.
 
-
-def _resolve_expr(expr: str, data: Dict[str, Any]) -> Optional[str]:
-    """Resolve ``expr`` (possibly with ``| default``) from data + env.
-
-    Returns ``None`` when unresolvable (tag should be preserved).
+    Supported forms:
+    - ``key``                  — simple lookup
+    - ``obj.nested.key``       — dot-notation traversal
+    - ``array.0``              — integer index
+    - ``env.VAR_NAME``         — environment variable
+    - ``key | "default"``      — default value fallback
     """
-    # Handle default: [[key | "default"]] or [[key | 42]]
-    dm = _DEFAULT_RE.match(expr)
-    if dm:
-        key_part = dm.group(1).strip()
-        default_raw = dm.group(2).strip().strip('"\'')
-    else:
-        key_part = expr.strip()
-        default_raw = None
+    expr = expr.strip()
 
-    # [[env.VAR_NAME]]
-    if key_part.startswith("env."):
-        env_key = key_part[4:]
-        val = os.environ.get(env_key)
+    # Handle default: [[key | "default"]]
+    default = None
+    if "|" in expr:
+        expr, default_part = expr.split("|", 1)
+        expr = expr.strip()
+        default_part = default_part.strip().strip('"').strip("'")
+        default = default_part
+
+    # env.VAR_NAME shorthand
+    if expr.startswith("env."):
+        val = os.environ.get(expr[4:])
         if val is not None:
             return val
-        return default_raw  # may be None → tag preserved
+        return default if default is not None else None
 
-    val = _resolve_path(key_part, data)
-    if val is not None:
+    # Dot-notation traversal
+    parts = expr.split(".")
+    cur: Any = data
+    for part in parts:
+        if cur is None:
+            break
+        if isinstance(cur, dict):
+            cur = cur.get(part)
+        elif isinstance(cur, (list, tuple)):
+            try:
+                cur = cur[int(part)]
+            except (ValueError, IndexError):
+                cur = None
+        else:
+            cur = None
+
+    if cur is not None:
+        return cur
+    return default if default is not None else None
+
+
+def _resolve_var_tags(text: str, data: Dict[str, Any], phase: Optional[str]) -> str:
+    """Replace ``<ARX [[...]] />`` tags whose phase matches."""
+
+    def _repl(m: re.Match) -> str:
+        expr = m.group(1)
+        tag_phase = m.group(2)  # None when no :phase annotation
+
+        # If tag has a phase and it doesn't match current phase, leave as-is
+        if tag_phase and tag_phase != phase:
+            return m.group(0)
+
+        val = _resolve_expr(expr, data)
+        if val is None:
+            # Unresolved — leave the tag for a later phase
+            return m.group(0)
         return str(val)
-    return default_raw  # may be None → tag preserved
+
+    return _VAR_TAG_RE.sub(_repl, text)
 
 
-def _render_var_tags(
-    text: str,
-    data: Dict[str, Any],
-    phase: Optional[str] = None,
-) -> str:
-    """Replace resolvable ``<ARX [[expr]] [:phase] />`` tags; leave unresolvable ones.
+def _resolve_if_tags(text: str, data: Dict[str, Any]) -> str:
+    """Evaluate ``<ARX:IF [[expr]]>...`` blocks."""
 
-    Phase semantics:
-    - Tag has no phase marker → eager: always attempt resolution.
-    - Tag has ``:phase`` marker and ``phase`` arg matches → resolve.
-    - Tag has ``:phase`` marker and ``phase`` arg does NOT match → preserve verbatim.
-    - Tag has ``:phase`` marker and no ``phase`` arg → preserve verbatim
-      (phase-scoped tags are only resolved when the matching phase is active).
+    def _repl(m: re.Match) -> str:
+        val = _resolve_expr(m.group(1), data)
+        if val:
+            return m.group(2)
+        return ""
+
+    return _IF_TAG_RE.sub(_repl, text)
+
+
+def _resolve_replace_tags(text: str, data: Dict[str, Any]) -> str:
+    """Evaluate ``<ARX:REPLACE ...>`` blocks.
+
+    Currently returns the body unchanged — replacement logic is agent-side.
+    The tag is stripped, leaving the body content.
     """
 
-    def _sub(m: re.Match) -> str:
-        expr = m.group(1)
-        tag_phase = m.group(2)  # None when no :phase marker
+    def _repl(m: re.Match) -> str:
+        return m.group(3)
 
-        if tag_phase is not None:
-            # Phase-scoped tag: only resolve when phase matches
-            if phase is None or tag_phase != phase:
-                return m.group(0)  # preserve for correct phase
-
-        resolved = _resolve_expr(expr, data)
-        if resolved is None:
-            return m.group(0)  # preserve unresolvable
-        return resolved
-
-    return _VAR_TAG_RE.sub(_sub, text)
+    return _REPLACE_TAG_RE.sub(_repl, text)
 
 
 # ---------------------------------------------------------------------------
-# Public render functions
+# Public API
 # ---------------------------------------------------------------------------
 
-def render(
-    text: str,
-    data: Optional[Dict[str, Any]] = None,
-    phase: Optional[str] = None,
-) -> str:
-    """Render *text* (no front-matter stripping) against *data* + env.
 
-    Steps:
-      1. Env-var expansion (``$VAR`` / ``${VAR}``)
-      2. ARX variable tag substitution (respecting *phase* markers)
+def render(text: str, data: Optional[Dict[str, Any]] = None, phase: Optional[str] = None) -> str:
+    """Render a template string.
 
-    Args:
-        text:  Raw template body.
-        data:  Variable dict merged with env for ``[[expr]]`` resolution.
-        phase: Active render phase (``"new"`` or ``"do"``).  Phase-tagged
-               tags that don't match are preserved verbatim.
+    Processing order:
+    1. Expand ``$VAR`` / ``${VAR}`` environment variables.
+    2. Resolve ``<ARX:IF>`` conditional blocks.
+    3. Resolve ``<ARX:REPLACE>`` blocks (strip tags, keep body).
+    4. Resolve ``<ARX [[...]] />`` variable tags (phase-aware).
 
-    Unresolvable tags are left unchanged.
+    Mustache ``{{...}}`` directives are left untouched.
     """
     data = data or {}
     text = _expand_env(text)
-    text = _render_var_tags(text, data, phase=phase)
+    text = _resolve_if_tags(text, data)
+    text = _resolve_replace_tags(text, data)
+    text = _resolve_var_tags(text, data, phase)
     return text
 
 
 def render_file(
-    path: Path,
+    path: str | Path,
     data: Optional[Dict[str, Any]] = None,
     phase: Optional[str] = None,
-) -> Tuple[Optional[Dict[str, Any]], str]:
-    """Read *path*, strip front matter, render body.
+) -> Tuple[Dict[str, Any], str]:
+    """Read a file, strip front matter, and render the body.
 
-    Returns ``(front_matter_dict_or_None, rendered_body)``.
-
-    Args:
-        path:  Template file path.
-        data:  Variable dict for ``[[expr]]`` resolution.
-        phase: Active render phase (``"new"`` or ``"do"``); forwarded to
-               ``render()``.
+    Returns ``(front_matter_dict, rendered_body)``.
     """
-    raw = path.read_text(encoding="utf-8")
-    fm, body = strip_front_matter(raw)
-    rendered = render(body, data, phase=phase)
+    text = Path(path).read_text(encoding="utf-8")
+    fm, body = strip_front_matter(text)
+    rendered = render(body, data, phase)
     return fm, rendered
-
-
-# ---------------------------------------------------------------------------
-# Context builder (CLI helper)
-# ---------------------------------------------------------------------------
-
-def _load_data_file(data_file: str) -> Dict[str, Any]:
-    """Load a JSON or YAML file into a dict."""
-    p = Path(data_file)
-    if not p.exists():
-        raise ValueError(f"Data file not found: {data_file}")
-    raw = p.read_text(encoding="utf-8")
-    if p.suffix.lower() in (".yaml", ".yml"):
-        try:
-            import yaml  # type: ignore[import]
-            return dict(yaml.safe_load(raw) or {})
-        except Exception as exc:
-            raise ValueError(f"Invalid YAML in {data_file}: {exc}") from exc
-    try:
-        return dict(json.loads(raw))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON in {data_file}: {exc}") from exc
-
-
-def _parse_json_arg(label: str, raw: str) -> Dict[str, Any]:
-    """Parse a raw JSON string; raise ValueError with a clear message."""
-    try:
-        return dict(json.loads(raw))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON from {label}: {exc}") from exc
 
 
 def build_context(
     data_json: Optional[str] = None,
     data_file: Optional[str] = None,
-    stdin_json: Optional[str] = None,
+    stdin_json: bool = False,
 ) -> Dict[str, Any]:
-    """Merge data from multiple sources into a single dict.
+    """Merge multiple data sources into a single context dict.
 
-    Priority (highest wins): stdin > ``--data`` JSON string > ``--data-file``.
-
-    Args:
-        data_json:  Inline JSON string (from ``--data '{...}'``).
-        data_file:  Path to a JSON or YAML file.
-        stdin_json: Raw text read from stdin.
+    Merge order (later wins): *data_file* < *data_json* < *stdin*.
     """
-    result: Dict[str, Any] = {}
+    ctx: Dict[str, Any] = {}
+
     if data_file:
-        result.update(_load_data_file(data_file))
+        p = Path(data_file)
+        if p.exists():
+            raw = p.read_text(encoding="utf-8")
+            if p.suffix in (".yaml", ".yml"):
+                ctx.update(yaml.safe_load(raw) or {})
+            else:
+                ctx.update(json.loads(raw))
+
     if data_json:
-        result.update(_parse_json_arg("--data", data_json))
-    if stdin_json and stdin_json.strip():
-        result.update(_parse_json_arg("stdin", stdin_json))
-    return result
+        ctx.update(json.loads(data_json))
 
+    if stdin_json and not sys.stdin.isatty():
+        raw = sys.stdin.read()
+        if raw.strip():
+            ctx.update(json.loads(raw))
 
-def read_stdin_if_available() -> Optional[str]:
-    """Return stdin content when data is being piped; else None."""
-    if sys.stdin.isatty():
-        return None
-    try:
-        return sys.stdin.read()
-    except Exception:
-        return None
+    return ctx

@@ -1,676 +1,260 @@
-"""AgentRx prompt commands - Work with prompt files."""
+"""``arx prompt`` — create, execute, and list prompt files.
 
-import json
+Sub-commands:
+
+- ``arx prompt new``  — create a prompt from a template or plain text.
+- ``arx prompt do``   — execute (render) an existing prompt file.
+- ``arx prompt list`` — show recent prompt files with relative age.
+"""
+
+from __future__ import annotations
+
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
 import click
+import yaml
 
-from agentrx.render import build_context, read_stdin_if_available, render_file
-
-# Default directories
-_DEFAULT_VIBES_SUBDIR = "vibes"
-DEFAULT_HISTORY_SUBDIR = "history"
-
-
-class PromptError(Exception):
-    """Error during prompt operations."""
-    pass
-
-
-def get_work_docs_dir() -> Path:
-    """Get the ARX_WORK_DOCS directory (required env var)."""
-    work_docs = os.environ.get("ARX_WORK_DOCS")
-    if not work_docs:
-        raise PromptError(
-            "ARX_WORK_DOCS environment variable is not set.\n"
-            "Set it to the project docs directory (e.g. export ARX_WORK_DOCS=docs/agentrx)."
-        )
-    return Path(work_docs)
-
-
-def get_prompts_dir() -> Path:
-    """Get the vibes/prompts directory under ARX_WORK_DOCS."""
-    return get_work_docs_dir() / _DEFAULT_VIBES_SUBDIR
-
-
-def get_history_dir() -> Path:
-    """Get the history directory under ARX_WORK_DOCS."""
-    history_dir = os.environ.get("ARX_HISTORY")
-    if history_dir:
-        return Path(history_dir)
-    return get_work_docs_dir() / DEFAULT_HISTORY_SUBDIR
-
-
-def find_most_recent_prompt(prompts_dir: Path) -> Optional[Path]:
-    """Find the most recently modified .md file in prompts directory."""
-    if not prompts_dir.exists():
-        return None
-
-    md_files = list(prompts_dir.glob("*.md"))
-    if not md_files:
-        return None
-
-    # Sort by modification time, most recent first
-    md_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-    return md_files[0]
-
-
-
-def write_history_entry(
-    history_dir: Path,
-    prompt_file: Path,
-    data_source: Optional[str],
-    data: dict,
-    output_file: Optional[Path],
-) -> Path:
-    """Write execution history entry."""
-    now = datetime.now()
-    date_dir = history_dir / now.strftime("%Y-%m-%d")
-    date_dir.mkdir(parents=True, exist_ok=True)
-
-    prompt_name = prompt_file.stem
-    timestamp = now.strftime("%H-%M-%S")
-    history_file = date_dir / f"{prompt_name}_{timestamp}.json"
-
-    entry = {
-        "timestamp": now.isoformat(),
-        "prompt_file": str(prompt_file),
-        "data_source": data_source,
-        "data": data,
-        "output_file": str(output_file) if output_file else None,
-    }
-
-    history_file.write_text(json.dumps(entry, indent=2))
-    return history_file
-
-
-@click.group()
-def prompt():
-    """Work with prompt files.
-
-    Commands for creating, executing, and managing prompt files.
-    """
-    pass
-
-
-@prompt.command("do")
-@click.argument("prompt_file", required=False, type=click.Path())
-@click.argument("user_prompt_text", required=False)
-@click.option("-d", "--data", "data_file", type=click.Path(exists=True),
-              help="Path to JSON/YAML data file for context")
-@click.option("-D", "--data-json", "data_json",
-              help="Inline JSON string for context (merged with --data; highest priority)")
-@click.option("-H", "--history", is_flag=True,
-              help="Append execution to history log")
-@click.option("-o", "--output", "output_file", type=click.Path(),
-              help="Output file path (default: stdout)")
-@click.option("--dry-run", is_flag=True,
-              help="Show what would be executed without running")
-@click.option("-v", "--verbose", is_flag=True,
-              help="Show detailed output")
-def do_prompt(
-    prompt_file: Optional[str],
-    user_prompt_text: Optional[str],
-    data_file: Optional[str],
-    data_json: Optional[str],
-    history: bool,
-    output_file: Optional[str],
-    dry_run: bool,
-    verbose: bool,
-):
-    """Execute a prompt with optional data context.
-
-    If PROMPT_FILE is not specified, uses the most recent .md file
-    in $ARX_WORK_DOCS/vibes.
-
-    USER_PROMPT_TEXT is an optional inline instruction appended after the
-    rendered prompt.  It is also injected into the data context as
-    ``user_prompt`` so templates can reference it via ``<ARX [[user_prompt]] />``.
-
-    Data can be provided via --data file, --data-json inline string,
-    or piped through stdin.  When multiple sources are given they are
-    merged: file < --data-json < stdin (stdin wins).
-
-    Examples:
-
-        # Execute most recent prompt
-        arx prompt do
-
-        # Execute specific prompt with data file
-        arx prompt do my_prompt.md --data context.json
-
-        # Execute with inline JSON context
-        arx prompt do my_prompt.md --data-json '{"name": "Alice"}'
-
-        # Execute with inline user prompt text
-        arx prompt do my_prompt.md "What is the status of the project?"
-
-        # Execute most recent prompt with user instruction (no prompt file)
-        arx prompt do "Give them another try."
-
-        # Pipe data from another command
-        cat data.json | arx prompt do my_prompt.md
-
-        # Execute and log to history
-        arx prompt do my_prompt.md --history
-    """
-    # Disambiguate: if only one positional arg is given and it doesn't look
-    # like a file path (no extension, not an existing file), treat it as
-    # user_prompt_text rather than prompt_file.
-    if prompt_file and not user_prompt_text:
-        p = Path(prompt_file)
-        if not p.exists() and not p.suffix:
-            user_prompt_text = prompt_file
-            prompt_file = None
-    try:
-        _do_prompt_impl(
-            prompt_file=prompt_file,
-            user_prompt_text=user_prompt_text,
-            data_file=data_file,
-            data_json=data_json,
-            history=history,
-            output_file=output_file,
-            dry_run=dry_run,
-            verbose=verbose,
-        )
-    except PromptError as e:
-        click.secho(f"Error: {e}", fg="red", err=True)
-        sys.exit(1)
-
-
-def _resolve_prompt_path(prompt_file: Optional[str], prompts_dir: Optional[Path]) -> Path:
-    """Resolve prompt_file arg to an existing Path."""
-    if prompt_file:
-        p = Path(prompt_file)
-        if not p.is_absolute() and not p.exists() and prompts_dir:
-            candidate = prompts_dir / prompt_file
-            if candidate.exists():
-                return candidate
-        return p
-    if prompts_dir is None or not prompts_dir.exists():
-        raise PromptError(
-            f"Prompts directory not found: {prompts_dir}\n"
-            "Ensure ARX_WORK_DOCS is set and $ARX_WORK_DOCS/vibes exists, or specify a prompt file."
-        )
-    p = find_most_recent_prompt(prompts_dir)
-    if not p:
-        raise PromptError(f"No prompt files found in {prompts_dir}")
-    return p
-
-
-def _build_data_source_label(data_file: Optional[str], data_json: Optional[str], stdin: Optional[str]) -> Optional[str]:
-    """Human-readable label for where data came from."""
-    parts = []
-    if data_file:
-        parts.append(data_file)
-    if data_json:
-        parts.append("--data-json")
-    if stdin:
-        parts.append("stdin")
-    return " + ".join(parts) if parts else None
-
-
-def _do_prompt_impl(
-    prompt_file: Optional[str],
-    user_prompt_text: Optional[str],
-    data_file: Optional[str],
-    data_json: Optional[str],
-    history: bool,
-    output_file: Optional[str],
-    dry_run: bool,
-    verbose: bool,
-) -> None:
-    """Implementation of prompt do command."""
-    # Only resolve prompts_dir (requires ARX_WORK_DOCS) when no explicit file given
-    prompts_dir: Optional[Path] = None
-    if not prompt_file:
-        prompts_dir = get_prompts_dir()
-    prompt_path = _resolve_prompt_path(prompt_file, prompts_dir)
-
-    if not prompt_path.exists():
-        raise PromptError(f"Prompt file not found: {prompt_path}")
-
-    # Build data context via render.build_context (file < --data-json < stdin)
-    stdin_data = read_stdin_if_available()
-    try:
-        data = build_context(data_json=data_json, data_file=data_file, stdin_json=stdin_data)
-    except ValueError as exc:
-        raise PromptError(str(exc)) from exc
-
-    # Inject user_prompt_text into data context so templates can reference it
-    if user_prompt_text:
-        data.setdefault("user_prompt", user_prompt_text)
-
-    data_source = _build_data_source_label(data_file, data_json, stdin_data)
-
-    # Dry run
-    if dry_run:
-        _print_dry_run(prompt_path, data_source, data, output_file, history,
-                       user_prompt_text=user_prompt_text)
-        return
-
-    if verbose:
-        click.secho(f"Executing prompt: {prompt_path}", fg="cyan")
-        if data_source:
-            click.secho(f"With data from: {data_source}", fg="cyan")
-        if user_prompt_text:
-            click.secho(f"User instruction: {user_prompt_text}", fg="cyan")
-
-    # Render template at the "do" phase
-    try:
-        _fm, rendered = render_file(prompt_path, data, phase="do")
-    except Exception as exc:
-        raise PromptError(f"Render error: {exc}") from exc
-
-    # Append user prompt text if provided and not already handled by template
-    if user_prompt_text:
-        output_content = rendered.rstrip("\n") + f"\n\n{user_prompt_text}\n"
-    else:
-        output_content = rendered
-
-    # Write output
-    _write_output(output_content, output_file, verbose)
-
-    # Write history if requested
-    if history:
-        history_dir = get_history_dir()
-        output_path_obj = Path(output_file) if output_file else None
-        history_file = write_history_entry(
-            history_dir=history_dir,
-            prompt_file=prompt_path,
-            data_source=data_source,
-            data=data,
-            output_file=output_path_obj,
-        )
-        if verbose:
-            click.secho(f"History logged to: {history_file}", fg="green")
-
-
-def _print_dry_run(
-    prompt_path: Path,
-    data_source: Optional[str],
-    data: dict,
-    output_file: Optional[str],
-    history: bool,
-    user_prompt_text: Optional[str] = None,
-) -> None:
-    """Print dry-run summary."""
-    prompt_content = prompt_path.read_text(encoding="utf-8")
-    click.secho("=== Dry Run ===", fg="cyan", bold=True)
-    click.echo(f"Prompt file: {prompt_path}")
-    click.echo(f"Data source: {data_source or 'none'}")
-    if user_prompt_text:
-        click.echo(f"User instruction: {user_prompt_text}")
-    if data:
-        click.echo(f"Data keys: {list(data.keys())}")
-    click.echo(f"Output: {output_file or 'stdout'}")
-    click.echo(f"History: {'enabled' if history else 'disabled'}")
-    click.echo()
-    click.secho("=== Prompt Content (first 500 chars) ===", fg="cyan")
-    click.echo(prompt_content[:500] + ("..." if len(prompt_content) > 500 else ""))
-    if data:
-        click.echo()
-        click.secho("=== Data Preview ===", fg="cyan")
-        click.echo(json.dumps(data, indent=2)[:500])
-
-
-def _write_output(content: str, output_file: Optional[str], verbose: bool) -> None:
-    """Write rendered content to file or stdout."""
-    if output_file:
-        output_path = Path(output_file)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(content, encoding="utf-8")
-        if verbose:
-            click.secho(f"Output written to: {output_path}", fg="green")
-    else:
-        click.echo(content)
-
-
-@prompt.command("new")
-@click.argument("template", required=False)
-@click.argument("prompt_text", required=False)
-@click.option("-D", "--data", "data_json",
-              help="Inline JSON context merged with template data")
-@click.option("-n", "--name", "short_name",
-              help="Base name for the output file (default: derived from PROMPT_TEXT)")
-@click.option("--subdir",
-              help="Subdirectory under ARX_WORK_DOCS for output (overrides template front-matter)")
-@click.option("--dry-run", is_flag=True,
-              help="Show what would be written without creating any file")
-@click.option("-v", "--verbose", is_flag=True,
-              help="Show detailed output")
-def new_prompt(
-    template: Optional[str],
-    prompt_text: Optional[str],
-    data_json: Optional[str],
-    short_name: Optional[str],
-    subdir: Optional[str],
-    dry_run: bool,
-    verbose: bool,
-):
-    """Create a new prompt file, optionally from a template.
-
-    TEMPLATE is a template name (looked up in \b$ARX_AGENT_TOOLS/templates/ and
-    \b$AGENTRX_SOURCE/templates/) or a direct file path.  When omitted the
-    command falls back to writing PROMPT_TEXT as a plain file.
-
-    PROMPT_TEXT is the user's command/intent text.  It is always available
-    inside the template as \b[[prompt]] and sets the output file's short name.
-
-    Template front-matter fields recognised by this command:
-
-    \b
-      subdir:      Output subdirectory under ARX_WORK_DOCS (default: vibes)
-      short_name:  Base filename (default: derived from prompt text)
-      script:      Path to a script that augments context — receives current
-                   JSON on stdin, must emit a JSON object on stdout.
-
-    Examples:
-
-    \b
-        # Plain prompt file (no template)
-        arx prompt new "Implement user auth"
-
-    \b
-        # From template by name
-        arx prompt new vibes "Refactor the payment module"
-
-    \b
-        # From template file with inline data
-        arx prompt new ./templates/delta.md "Fix the cache bug" --data '{"ticket":"ENG-42"}'
-
-    \b
-        # Preview without writing
-        arx prompt new vibes "Debug login" --dry-run
-    """
-    try:
-        _new_prompt_impl(
-            template=template,
-            prompt_text=prompt_text,
-            data_json=data_json,
-            short_name=short_name,
-            subdir_override=subdir,
-            dry_run=dry_run,
-            verbose=verbose,
-        )
-    except PromptError as e:
-        click.secho(f"Error: {e}", fg="red", err=True)
-        sys.exit(1)
-
+from ..render import build_context, render, render_file, strip_front_matter
 
 # ---------------------------------------------------------------------------
-# prompt new — helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
-_DEFAULT_SUBDIR = "vibes"
-_DEFAULT_TEMPLATES_SUBDIR = "templates"
+
+def _working_dir() -> Path:
+    """Return the working-docs directory (``$ARX_WORKING``), falling back to cwd."""
+    return Path(os.environ.get("ARX_WORKING", "."))
 
 
-def _template_search_dirs() -> List[Path]:
-    """Ordered list of directories to search for named templates."""
-    dirs: List[Path] = []
-    agent_tools = os.environ.get("ARX_AGENT_TOOLS")
-    if agent_tools:
-        dirs.append(Path(agent_tools) / _DEFAULT_TEMPLATES_SUBDIR)
-    agentrx_src = os.environ.get("AGENTRX_SOURCE")
-    if agentrx_src:
-        dirs.append(Path(agentrx_src) / "templates")
-    return dirs
+def _templates_dir() -> Path:
+    """Return the templates directory (``$ARX_TEMPLATES``)."""
+    d = os.environ.get("ARX_TEMPLATES")
+    if not d:
+        src = os.environ.get("AGENTRX_SOURCE")
+        if src:
+            d = str(Path(src) / "_arx_templates")
+    if not d:
+        raise click.ClickException(
+            "Cannot locate templates. Set ARX_TEMPLATES or AGENTRX_SOURCE."
+        )
+    return Path(d)
 
 
-def _find_template(name_or_path: str) -> Optional[Path]:
-    """Resolve a template name or path to an existing file.
+def _resolve_template(name: str) -> Path:
+    """Find a template by subdirectory name under ``$ARX_TEMPLATES``.
 
-    Resolution order:
-      1. Direct path (as-is, then with .md suffix)
-      2. $ARX_AGENT_TOOLS/templates/{name}[.md]
-      3. $AGENTRX_SOURCE/templates/{name}[.md]
+    Searches for ``<name>.md``, ``<name>.yaml``, or a directory ``<name>/``
+    containing an index file.
     """
-    p = Path(name_or_path)
-    if p.exists():
-        return p
-    if p.suffix == "" and p.with_suffix(".md").exists():
-        return p.with_suffix(".md")
+    base = _templates_dir()
 
-    for search_dir in _template_search_dirs():
-        if not search_dir.exists():
-            continue
-        for candidate in (search_dir / name_or_path, search_dir / f"{name_or_path}.md"):
-            if candidate.exists():
+    # Direct file matches
+    for ext in (".md", ".yaml", ".yml"):
+        candidate = base / f"{name}{ext}"
+        if candidate.is_file():
+            return candidate
+
+    # Subdirectory with index
+    subdir = base / name
+    if subdir.is_dir():
+        for idx in ("index.md", "index.yaml", f"{name}.md", f"{name}.yaml"):
+            candidate = subdir / idx
+            if candidate.is_file():
                 return candidate
-    return None
+
+    raise click.ClickException(f"Template not found: {name} (searched {base})")
 
 
-def _run_context_script(script: str, context: Dict[str, Any]) -> Dict[str, Any]:
-    """Run *script*, pass *context* as JSON on stdin, merge JSON stdout into context.
+def _output_path(short_name: str, subdir: str = "vibes") -> Path:
+    """Build the output path: ``$ARX_WORKING/<subdir>/<short_name>_<timestamp>.md``."""
+    ts = datetime.now().strftime("%y%m%d_%H%M")
+    working = _working_dir()
+    dest = working / subdir
+    dest.mkdir(parents=True, exist_ok=True)
+    return dest / f"{short_name}_{ts}.md"
 
-    The script must:
-      - Accept current context JSON on stdin
-      - Print a JSON object on stdout (merged with highest priority)
-      - Exit 0 on success
 
-    Raises PromptError on non-zero exit or non-JSON output.
+def _run_context_script(script: str, data: dict) -> dict:
+    """Execute a front-matter ``script:`` enrichment command.
+
+    The script receives the current context as JSON on stdin and is expected
+    to emit augmented JSON on stdout.
     """
+    import json
+
     try:
-        proc = subprocess.run(
-            [script],
-            input=json.dumps(context),
+        result = subprocess.run(
+            script,
+            shell=True,
+            input=json.dumps(data),
             capture_output=True,
             text=True,
             timeout=30,
         )
-    except FileNotFoundError:
-        raise PromptError(f"Context script not found: {script}")
-    except subprocess.TimeoutExpired:
-        raise PromptError(f"Context script timed out (30 s): {script}")
-
-    if proc.returncode != 0:
-        raise PromptError(
-            f"Context script exited {proc.returncode}: {proc.stderr.strip()}"
-        )
-    try:
-        return dict(json.loads(proc.stdout))
-    except json.JSONDecodeError as exc:
-        raise PromptError(
-            f"Context script returned non-JSON output: {exc}"
-        ) from exc
+        if result.returncode == 0 and result.stdout.strip():
+            data.update(json.loads(result.stdout))
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+        click.echo(f"Warning: context script failed: {exc}", err=True)
+    return data
 
 
-def _derive_short_name(text: str) -> str:
-    """Derive a short name from the first three words of *text*."""
-    words = text.split()[:3]
-    return "_".join(
-        "".join(c for c in w.lower() if c.isalnum())
-        for w in words
-    ) or "prompt"
+def _relative_age(ts: float) -> str:
+    """Human-friendly relative age string."""
+    delta = time.time() - ts
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{int(delta / 60)}m ago"
+    if delta < 86400:
+        return f"{int(delta / 3600)}h ago"
+    return f"{int(delta / 86400)}d ago"
 
 
-def _build_output_path(work_docs: Path, subdir: str, short_name: str) -> Path:
-    """Return the full output path (does not create dirs)."""
-    ts = datetime.now().strftime("%y-%m-%d-%H")
-    return work_docs / subdir / f"{short_name}_{ts}.md"
+# ---------------------------------------------------------------------------
+# Click group
+# ---------------------------------------------------------------------------
 
 
-def _resolve_template_arg(
-    template: Optional[str],
-    prompt_text: Optional[str],
-) -> tuple:
-    """Return ``(template_path_or_None, prompt_text_or_None)``.
+@click.group("prompt")
+def prompt():
+    """Work with prompt files — create, execute, and list."""
 
-    If *template* doesn't resolve to a file and *prompt_text* is None,
-    the first arg is treated as prompt text (backward-compat).
-    Raises PromptError when *template* is given, doesn't resolve, and
-    *prompt_text* is also given (ambiguous).
+
+# ---------------------------------------------------------------------------
+# prompt new
+# ---------------------------------------------------------------------------
+
+
+@prompt.command("new")
+@click.argument("template", required=False)
+@click.argument("text", required=False)
+@click.option("--data", "data_json", default=None, help="Inline JSON data context.")
+@click.option("--data-file", default=None, type=click.Path(exists=True), help="YAML/JSON data file.")
+@click.option("-o", "--output", "output_path", default=None, type=click.Path(), help="Output file path (overrides default).")
+def prompt_new(template, text, data_json, data_file, output_path):
+    """Create a new prompt file from a template or plain text.
+
+    TEMPLATE is a template name resolved from $ARX_TEMPLATES (e.g. arch-facet).
+    TEXT is optional plain text to use as the prompt body (instead of a template).
     """
-    if not template:
-        return None, prompt_text
+    ctx = build_context(data_json=data_json, data_file=data_file, stdin_json=True)
 
-    template_path = _find_template(template)
-    if template_path is not None:
-        return template_path, prompt_text
+    if template:
+        # Resolve and render from template
+        tmpl_path = _resolve_template(template)
+        fm, body = render_file(tmpl_path, ctx, phase="new")
 
-    # Didn't resolve — fall back or error
-    if prompt_text is None:
-        return None, template  # treat as plain prompt text
-    raise PromptError(
-        f"Template not found: '{template}'\n"
-        f"Searched: {[str(d) for d in _template_search_dirs()]}"
-    )
+        # Run context script if declared in front matter
+        script = fm.get("script")
+        if script:
+            ctx = _run_context_script(script, ctx)
+            body = render(body, ctx, phase="new")
 
-
-def _render_template_stage(
-    template_path: Path,
-    context: Dict[str, Any],
-    verbose: bool,
-) -> tuple:
-    """Load + render template at the "new" phase, run optional context script.
-
-    Returns ``(front_matter_dict_or_None, rendered_body)``.
-    """
-    from agentrx.render import render as _arx_render
-
-    try:
-        fm, body = render_file(template_path, context, phase="new")
-    except Exception as exc:
-        raise PromptError(f"Failed to read template {template_path}: {exc}") from exc
-
-    script = (fm or {}).get("script")
-    if script:
-        if verbose:
-            click.secho(f"Running context script: {script}", fg="cyan")
-        script_out = _run_context_script(script, context)
-        context.update(script_out)
-        body = _arx_render(body, context, phase="new")
-
-    return fm, body
-
-
-def _new_prompt_impl(
-    template: Optional[str],
-    prompt_text: Optional[str],
-    data_json: Optional[str],
-    short_name: Optional[str],
-    subdir_override: Optional[str],
-    dry_run: bool,
-    verbose: bool,
-) -> None:
-    """Implementation of ``arx prompt new``."""
-
-    # Stage 1: resolve template / plain-text mode
-    template_path, prompt_text = _resolve_template_arg(template, prompt_text)
-
-    if not template_path and not prompt_text:
-        raise PromptError("Provide a TEMPLATE and/or PROMPT_TEXT.")
-
-    # Build initial context (--data JSON + stdin; prompt text added separately)
-    stdin_data = read_stdin_if_available()
-    try:
-        context: Dict[str, Any] = build_context(data_json=data_json, stdin_json=stdin_data)
-    except ValueError as exc:
-        raise PromptError(str(exc)) from exc
-    if prompt_text:
-        context.setdefault("prompt", prompt_text)
-
-    # Stage 2/3: template rendering + optional context script
-    fm: Optional[Dict[str, Any]] = None
-    if template_path:
-        fm, body = _render_template_stage(template_path, context, verbose)
+        short_name = fm.get("short_name", template)
+        subdir = fm.get("subdir", "vibes")
+    elif text:
+        # Plain text prompt
+        fm = {}
+        body = text
+        short_name = "prompt"
+        subdir = "vibes"
     else:
-        body = prompt_text or ""
+        raise click.ClickException("Provide a TEMPLATE name or TEXT content.")
 
-    # Resolve output metadata
-    out_subdir = subdir_override or (fm or {}).get("subdir", _DEFAULT_SUBDIR)
-    out_name = (
-        short_name
-        or (fm or {}).get("short_name")
-        or _derive_short_name(
-            prompt_text or (template_path.stem if template_path else "prompt")
-        )
-    )
-    work_docs = get_work_docs_dir()
-    out_path = _build_output_path(work_docs, out_subdir, out_name)
+    # Determine output location
+    if output_path:
+        dest = Path(output_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        dest = _output_path(short_name, subdir)
 
-    # Stage 4: dry-run preview
+    # Write front matter + body
+    out_parts = []
+    if fm:
+        # Rewrite front matter as a prompt (not template)
+        out_fm = {k: v for k, v in fm.items() if k not in ("script",)}
+        out_fm["arx"] = "prompt"
+        out_parts.append("---\n")
+        out_parts.append(yaml.dump(out_fm, default_flow_style=False, sort_keys=False))
+        out_parts.append("---\n")
+    out_parts.append(body)
+
+    dest.write_text("".join(out_parts), encoding="utf-8")
+    click.echo(f"Created {dest}")
+
+
+# ---------------------------------------------------------------------------
+# prompt do
+# ---------------------------------------------------------------------------
+
+
+@prompt.command("do")
+@click.argument("prompt_file", type=click.Path(exists=True))
+@click.option("--data", "data_json", default=None, help="Inline JSON data context.")
+@click.option("--data-file", default=None, type=click.Path(exists=True), help="YAML/JSON data file.")
+@click.option("--dry-run", is_flag=True, default=False, help="Preview rendered output without side effects.")
+@click.option("-o", "--output", "output_path", default=None, type=click.Path(), help="Write output to file instead of stdout.")
+def prompt_do(prompt_file, data_json, data_file, dry_run, output_path):
+    """Execute (render) an existing prompt file.
+
+    Renders the prompt with the ``:do`` phase, merging data from
+    data-file < --data JSON < stdin.
+    """
+    ctx = build_context(data_json=data_json, data_file=data_file, stdin_json=True)
+    fm, body = render_file(prompt_file, ctx, phase="do")
+
+    # Run context script if declared
+    script = fm.get("script")
+    if script:
+        ctx = _run_context_script(script, ctx)
+        body = render(body, ctx, phase="do")
+
     if dry_run:
-        _print_new_dry_run(template_path, out_path, out_subdir, out_name, context, body)
+        click.echo("--- DRY RUN ---")
+        click.echo(body)
         return
 
-    # Stage 5: write output
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(body, encoding="utf-8")
-    click.secho(f"Created: {out_path}", fg="green") if verbose else click.echo(str(out_path))
+    if output_path:
+        Path(output_path).write_text(body, encoding="utf-8")
+        click.echo(f"Wrote {output_path}")
+    else:
+        click.echo(body)
 
 
-def _print_new_dry_run(
-    template_path: Optional[Path],
-    out_path: Path,
-    out_subdir: str,
-    out_name: str,
-    context: Dict[str, Any],
-    body: str,
-) -> None:
-    """Print dry-run summary for prompt new."""
-    click.secho("=== Dry Run ===", fg="cyan", bold=True)
-    click.echo(f"Template:  {template_path or '(none)'}")
-    click.echo(f"Output:    {out_path}")
-    click.echo(f"Subdir:    {out_subdir}")
-    click.echo(f"Name:      {out_name}")
-    if context:
-        click.echo(f"Context keys: {sorted(context.keys())}")
-    click.echo()
-    click.secho("=== Rendered body (first 600 chars) ===", fg="cyan")
-    click.echo(body[:600] + ("..." if len(body) > 600 else ""))
+# ---------------------------------------------------------------------------
+# prompt list
+# ---------------------------------------------------------------------------
 
 
 @prompt.command("list")
-@click.option("-n", "--limit", default=10, help="Number of prompts to show")
-@click.option("--dir", "prompts_dir", type=click.Path(exists=True),
-              help="Prompts directory (default: $ARX_WORK_DOCS/vibes)")
-def list_prompts(limit: int, prompts_dir: Optional[str]):
-    """List recent prompt files.
-
-    Shows the most recent prompt files in $ARX_WORK_DOCS/vibes,
-    sorted by modification time.
-    """
-    if prompts_dir:
-        target_dir = Path(prompts_dir)
+@click.option("-n", "--limit", default=20, help="Max number of files to show.")
+@click.option("--dir", "search_dir", default=None, type=click.Path(exists=True), help="Directory to search (default: $ARX_WORKING/vibes).")
+def prompt_list(limit, search_dir):
+    """Show recent prompt files sorted by modification time."""
+    if search_dir:
+        base = Path(search_dir)
     else:
-        try:
-            target_dir = get_prompts_dir()
-        except PromptError as e:
-            click.secho(f"Error: {e}", fg="red", err=True)
-            sys.exit(1)
+        base = _working_dir() / "vibes"
 
-    if not target_dir.exists():
-        click.secho(f"Prompts directory not found: {target_dir}", fg="red", err=True)
-        sys.exit(1)
-
-    md_files = list(target_dir.glob("*.md"))
-    if not md_files:
-        click.echo(f"No prompt files in {target_dir}")
+    if not base.is_dir():
+        click.echo(f"No prompts directory found at {base}")
         return
 
-    # Sort by modification time
-    md_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    files = sorted(
+        (f for f in base.iterdir() if f.is_file() and f.suffix in (".md", ".yaml", ".yml")),
+        key=lambda f: f.stat().st_mtime,
+        reverse=True,
+    )
 
-    click.secho(f"Recent prompts in {target_dir}:", fg="cyan")
-    for i, f in enumerate(md_files[:limit]):
-        mtime = datetime.fromtimestamp(f.stat().st_mtime)
-        age = datetime.now() - mtime
-        if age.days > 0:
-            age_str = f"{age.days}d ago"
-        elif age.seconds > 3600:
-            age_str = f"{age.seconds // 3600}h ago"
-        else:
-            age_str = f"{age.seconds // 60}m ago"
+    if not files:
+        click.echo("No prompt files found.")
+        return
 
-        marker = "*" if i == 0 else " "
-        click.echo(f"  {marker} {f.name} ({age_str})")
-
-    if len(md_files) > limit:
-        click.echo(f"  ... and {len(md_files) - limit} more")
+    for f in files[:limit]:
+        age = _relative_age(f.stat().st_mtime)
+        click.echo(f"  {age:>10}  {f.name}")

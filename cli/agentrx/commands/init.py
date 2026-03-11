@@ -1,977 +1,225 @@
-"""AgentRx init command - Initialize project structure.
+"""``arx init`` — initialize an AgentRx workspace.
 
-Implements `arx init` per the CLI README specification.
+Non-interactive counterpart to ``init-arx.sh``.  Creates the workspace
+directory structure, copies/symlinks template assets, writes ``.env`` and
+``arx.config.yaml``.
 
-Environment variables (written to .env, read as defaults):
-  ARX_WORKSPACE_ROOT Workspace root directory (always = CWD / target_dir).
-  ARX_AGENT_TOOLS    Agent assets directory (default: $ARX_WORKSPACE_ROOT/_agents/).
-  ARX_TARGET_PROJ    Target project directory (default: $ARX_WORKSPACE_ROOT/_project/).
-  ARX_PROJ_DOCS      Project documentation directory (default: $ARX_TARGET_PROJ/docs).
-  ARX_WORK_DOCS      Working docs directory — vibes, deltas, history (default: $ARX_PROJ_DOCS/agentrx).
-  AGENTRX_SOURCE     Source of AgentRx assets used with --link-arx or copy.
+Template subdirectory mapping (from ``$AGENTRX_SOURCE/_arx_templates/``):
 
-Backward compatibility:
-  ARX_PROJECT_ROOT is accepted as a fallback when ARX_WORKSPACE_ROOT is not set.
+| Subdir                       | Destination            | Behaviour                              |
+|------------------------------|------------------------|----------------------------------------|
+| ``_arx_workspace_root.arx/`` | ``$ARX_ROOT``          | ``.ARX.`` stripped; only if absent      |
+| ``_arx_agent_tools.arx/``    | ``$ARX_AGENT_FILES``   | Copied (or symlinked with --link-arx)  |
+| ``_arx_work_docs.arx/``      | ``$ARX_WORKING``       | Always copied                          |
+| ``_arx_proj_docs.arx/``      | ``$ARX_PROJ_DOCS``     | Optional (--docs / --no-docs)          |
 """
+
+from __future__ import annotations
 
 import os
-import sys
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Optional
 
 import click
+import yaml
 
-from agentrx.render import render as _arx_render
-
-
-# ---------------------------------------------------------------------------
-# Inline bootstrap file templates
-# ---------------------------------------------------------------------------
-
-AGENTS_MD_TEMPLATE = """\
-# AGENTS Guidance
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## IMPORTANT: Coding Agents
-> Follow the instructions precisely. If it wasn't specified, don't do it.
-
-## Startup Context
-When starting a chat conversation or session for this project, read all the files indicated below.
-Do NOT read anything else until directed in prompts.
-
-### PARALLEL READ the following ONLY:
-#### AgentRx Instructions
-- README.md # to understand the basics of the project and directory structure
-- _agents/commands/agentrx/*.md # agentrx commands
-- _agents/skills/agentrx/*.md  # agentrx skills
-
-#### Project Context
-Project-specific commands, skills, and context documents follow similar naming conventions.
-Add those context documents into your context when prompted by the user.
-
-## IMPORTANT: List What Files You've Read on Startup
-At startup, after reading the files indicated above, print a list of the files read into the chat terminal.
-"""
-
-CLAUDE_MD_TEMPLATE = """\
-# Claude Code Guidance
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## 1. IMPORTANT: Start with AGENTS.md
-When loading memory, prioritize reading AGENTS.md first.
-
-## 2. Please Summarize What You've Read
-At startup provide a list of the files read in the chat history.
-
-## Context Documents
-For comprehensive project context, see [CONTEXT_DOCUMENTS_INDEX.md](./CONTEXT_DOCUMENTS_INDEX.md).
-"""
+from ..render import render_file
 
 # ---------------------------------------------------------------------------
-# Environment variable names (per README)
+# Helpers
 # ---------------------------------------------------------------------------
 
-ENV_WORKSPACE_ROOT = "ARX_WORKSPACE_ROOT"
-ENV_PROJECT_ROOT_LEGACY = "ARX_PROJECT_ROOT"  # backward compat
-ENV_AGENT_TOOLS  = "ARX_AGENT_TOOLS"
-ENV_TARGET_PROJ  = "ARX_TARGET_PROJ"
-ENV_PROJ_DOCS    = "ARX_PROJ_DOCS"
-ENV_WORK_DOCS    = "ARX_WORK_DOCS"
-
-# Default relative paths (relative to workspace root)
-DEFAULT_AGENTS_DIR  = "_agents"
-DEFAULT_PROJECT_DIR = "_project"
-DEFAULT_PROJ_DOCS   = "_project/docs"
-DEFAULT_WORK_DOCS   = "_project/docs/agentrx"
-
-# Sub-category names under the agent-tools directory
-AGENT_SUBDIRS = ["commands", "skills", "scripts", "hooks", "agents"]
-
-# Template subdirectory names inside templates/.
-# Each subdir maps 1-to-1 onto one ARX_* destination variable:
-#   _arx_workspace_root.arx/  → ARX_WORKSPACE_ROOT (workspace root ./),  .ARX. stripped
-#   _arx_agent_tools.arx/     → ARX_AGENT_TOOLS    (copy or symlink)
-#   _arx_proj_docs.arx/       → ARX_PROJ_DOCS      (optional docs skeleton)
-#   _arx_work_docs.arx/       → ARX_WORK_DOCS      (working docs subdirs)
-WORKSPACE_ROOT_TEMPLATE_SUBDIR = "_arx_workspace_root.arx"
-AGENTS_TEMPLATE_SUBDIR         = "_arx_agent_tools.arx"
-PROJ_DOCS_TEMPLATE_SUBDIR      = "_arx_proj_docs.arx"
-WORK_DOCS_TEMPLATE_SUBDIR      = "_arx_work_docs.arx"
-
-# Backward-compat alias; external code / tests that import DOCS_TEMPLATE_SUBDIR
-# still work while we migrate.
-DOCS_TEMPLATE_SUBDIR = PROJ_DOCS_TEMPLATE_SUBDIR
+_ARX_DOT_RE_STRIP = ".ARX."  # literal substring stripped from filenames
 
 
-# ---------------------------------------------------------------------------
-# Error
-# ---------------------------------------------------------------------------
-
-class InitError(Exception):
-    """Raised on unrecoverable init errors."""
-
-
-# ---------------------------------------------------------------------------
-# Low-level helpers (pure FS, no dry-run logic here)
-# ---------------------------------------------------------------------------
-
-def _mkdir(path: Path, verbose: bool = False) -> bool:
-    """Create *path* (and parents) if it does not already exist."""
-    if path.exists():
-        return False
-    path.mkdir(parents=True, exist_ok=True)
-    if verbose:
-        click.echo(f"    mkdir  {path}")
-    return True
+def _template_source() -> Path:
+    """Resolve the ``_arx_templates`` directory inside ``$AGENTRX_SOURCE``."""
+    src = os.environ.get("AGENTRX_SOURCE")
+    if not src:
+        raise click.ClickException(
+            "AGENTRX_SOURCE is not set. "
+            "Export it to point at your AgentRx source checkout."
+        )
+    p = Path(src) / "_arx_templates"
+    if not p.is_dir():
+        raise click.ClickException(f"Template directory not found: {p}")
+    return p
 
 
-def _write_file(path: Path, content: str, skip_existing: bool = True,
-                verbose: bool = False) -> bool:
-    """Write *content* to *path*; skip if exists and skip_existing=True."""
-    if skip_existing and path.exists():
-        if verbose:
-            click.secho(f"    [--]   {path.name} (exists, skipped)", fg="yellow")
-        return False
-    path.write_text(content, encoding="utf-8")
-    if verbose:
-        click.echo(f"    [OK]   {path.name}")
-    return True
+def _dest_name(name: str) -> str:
+    """Strip the ``.ARX.`` marker from a filename.
 
-
-def _make_symlink(link: Path, target: Path, verbose: bool = False) -> None:
-    """Create *link* -> *target* symlink, removing a prior entry if needed."""
-    if link.exists() and link.is_dir() and not link.is_symlink():
-        shutil.rmtree(link)
-    elif link.exists() or link.is_symlink():
-        link.unlink()
-    try:
-        rel = os.path.relpath(target, link.parent)
-    except ValueError:
-        rel = str(target)
-    link.symlink_to(rel)
-    if verbose:
-        click.echo(f"    [OK]   symlink {link.name} -> {rel}")
-
-
-def _copy_tree_safe(src: Path, dst: Path, verbose: bool = False) -> tuple[int, int]:
-    """Copy *src* tree into *dst*, skipping files that already exist.
-    Returns (files_copied, files_skipped).
+    ``AGENTS.ARX.md`` → ``AGENTS.md``
+    ``.cursorrules.arx`` → ``.cursorrules``
     """
-    copied = skipped = 0
-    for item in sorted(src.rglob("*")):
-        if not item.is_file():
-            continue
-        rel = item.relative_to(src)
-        dst_file = dst / rel
-        if dst_file.exists():
-            skipped += 1
-            if verbose:
-                click.secho(f"    [--]   {rel} (skipped)", fg="yellow")
+    if _ARX_DOT_RE_STRIP in name:
+        return name.replace(_ARX_DOT_RE_STRIP, ".")
+    if name.endswith(".arx"):
+        return name[: -len(".arx")]
+    return name
+
+
+def _copy_tree(src: Path, dst: Path, *, only_if_absent: bool = False, link: bool = False):
+    """Recursively copy *src* into *dst*, applying ``.ARX.`` stripping."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        target_name = _dest_name(item.name)
+        target = dst / target_name
+        if item.is_dir():
+            _copy_tree(item, target, only_if_absent=only_if_absent, link=link)
         else:
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(item, dst_file)
-            copied += 1
-            if verbose:
-                click.echo(f"    [OK]   {rel}")
-    return copied, skipped
+            if only_if_absent and target.exists():
+                continue
+            if link:
+                target.unlink(missing_ok=True)
+                target.symlink_to(item.resolve())
+            else:
+                shutil.copy2(item, target)
 
 
-def _parse_env_lines(lines: list[str]) -> dict[str, int]:
-    """Return mapping of env key -> line index for non-comment KEY=VAL lines."""
-    result: dict[str, int] = {}
-    for idx, raw in enumerate(lines):
-        stripped = raw.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            result[stripped.split("=", 1)[0].strip()] = idx
-    return result
+def _write_env(root: Path, env_vars: dict[str, str]):
+    """Write or overwrite the ``.env`` file with ``ARX_*`` variables."""
+    lines = [f'{k}="{v}"\n' for k, v in sorted(env_vars.items())]
+    (root / ".env").write_text("".join(lines), encoding="utf-8")
 
 
-def _update_env_file(env_path: Path, values: Dict[str, str],
-                     verbose: bool = False) -> None:
-    """Merge *values* into *env_path* in-place.
-    Existing keys are updated; new keys are appended; unrelated lines preserved.
-    """
-    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
-    key_to_line = _parse_env_lines(lines)
-    updated = list(lines)
-    to_append: list[str] = []
-
-    for k, v in values.items():
-        if k in key_to_line:
-            updated[key_to_line[k]] = f"{k}={v}"
-        else:
-            to_append.append(f"{k}={v}")
-
-    if to_append:
-        if updated and updated[-1].strip():
-            updated.append("")
-        updated.extend(to_append)
-
-    env_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
-    if verbose:
-        click.secho(f"  [OK] .env  {env_path}", fg="green")
-
-
-def _load_yaml(path: Optional[str]) -> Dict[str, Any]:
-    """Load YAML from *path* (or '-' for stdin).  Returns {} if nothing provided."""
-    if not path:
-        return {}
-    try:
-        import yaml  # type: ignore[import]
-    except ModuleNotFoundError as exc:
-        raise InitError(
-            "PyYAML is required for --data.  Install: pip install PyYAML"
-        ) from exc
-    if path == "-":
-        raw = sys.stdin.read()
-    else:
-        p = Path(path)
-        if not p.exists():
-            raise InitError(f"--data file not found: {path}")
-        raw = p.read_text(encoding="utf-8")
-    return dict(yaml.safe_load(raw) or {})
-
-
-def _safe_mustache_render(text: str, context: Dict[str, Any]) -> str:
-    """Render ARX variable tags and env-var expansions in *text*."""
-    return _arx_render(text, context)
-
-
-def _find_templates_dir(agentrx_source: Optional[str]) -> Optional[Path]:
-    """Locate the templates/ directory (prefer from AGENTRX_SOURCE, then walk up)."""
-    if agentrx_source:
-        cand = Path(agentrx_source) / "templates"
-        if cand.is_dir():
-            return cand
-    for parent in Path(__file__).resolve().parents:
-        cand = parent / "templates"
-        if cand.is_dir():
-            return cand
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Dry-run–aware runner
-# ---------------------------------------------------------------------------
-
-_JUNK_FILES = frozenset({".DS_Store", "Thumbs.db", ".AppleDouble"})
-_JUNK_SUFFIXES = frozenset({".pyc", ".pyo"})
-_JUNK_DIRS = frozenset({".git", "__pycache__", ".mypy_cache", ".ruff_cache"})
-
-
-def _is_junk(rel: Path) -> bool:
-    """Return True for OS/tool artefacts that should never be copied."""
-    return (
-        rel.name in _JUNK_FILES
-        or rel.suffix in _JUNK_SUFFIXES
-        or any(p in _JUNK_DIRS for p in rel.parts)
+def _write_config(root: Path, config: dict):
+    """Write ``arx.config.yaml``."""
+    (root / "arx.config.yaml").write_text(
+        yaml.dump(config, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
     )
 
 
-def _strip_arx_marker(name: str) -> str:
-    """Strip the ``.ARX.`` or ``.arx.`` marker from a template filename.
-
-    e.g. ``AGENTS.ARX.md`` → ``AGENTS.md``
-         ``context.arx.yaml`` → ``context.yaml``
-    """
-    return name.replace(".ARX.", ".").replace(".arx.", ".")
-
-
-class _Runner:
-    """Wraps FS actions; in dry-run mode prints concise planned actions."""
-
-    def __init__(self, dry_run: bool, verbose: bool) -> None:
-        self.dry_run = dry_run
-        self.verbose = verbose
-        self._seen_dirs: set[Path] = set()   # dedup mkdir announcements
-
-    def mkdir(self, path: Path) -> None:
-        if self.dry_run:
-            resolved = path.resolve()
-            if resolved in self._seen_dirs:
-                return
-            self._seen_dirs.add(resolved)
-            # Show path relative to CWD when possible, else absolute
-            try:
-                display = path.relative_to(Path.cwd())
-            except ValueError:
-                display = path
-            if path.exists():
-                click.secho(f"  [skip] {display}/  (exists)", fg="yellow")
-            else:
-                click.echo(f"  [make] {display}/")
-        else:
-            _mkdir(path, self.verbose)
-
-    def _write_copy_line(self, filename: str, from_dir: str, to_dir: str) -> None:
-        """Print the [copy] dry-run line in 'from … to …' format.
-
-        Keeps output to one line when it fits; wraps from/to onto a second
-        indented line when the combined text would exceed 80 columns.
-        """
-        from_triv = from_dir in (".", "")
-        to_triv = to_dir in (".", "")
-        if from_triv and to_triv:
-            click.echo(f"  [copy] {filename}")
-            return
-        if from_triv:
-            suffix = f"  to {to_dir}/"
-        elif to_triv:
-            suffix = f"  from {from_dir}/"
-        else:
-            suffix = f"  from {from_dir}/  to {to_dir}/"
-        line = f"  [copy] {filename}{suffix}"
-        if len(line) <= 120:
-            click.echo(line)
-        else:
-            click.echo(f"  [copy] {filename}")
-            if not from_triv:
-                click.echo(f"         from {from_dir}/")
-            if not to_triv:
-                click.echo(f"           to {to_dir}/")
-
-    def write(self, path: Path, content: str, skip_existing: bool = True,
-              label: Optional[str] = None, src: Optional[Path] = None) -> None:
-        if self.dry_run:
-            name = label or path.name
-            if skip_existing and path.exists():
-                click.secho(f"  [skip] {name}  (exists)", fg="yellow")
-            elif src is not None:
-                from_dir = str(Path(src).parent)
-                try:
-                    to_dir = str(path.parent.relative_to(Path.cwd()))
-                except ValueError:
-                    to_dir = str(path.parent)
-                self._write_copy_line(Path(src).name, from_dir, to_dir)
-            else:
-                click.echo(f"  [write] {name}")
-        else:
-            _write_file(path, content, skip_existing=skip_existing, verbose=self.verbose)
-
-    def symlink(self, link: Path, target: Path) -> None:
-        if self.dry_run:
-            try:
-                link_disp = link.relative_to(Path.cwd())
-            except ValueError:
-                link_disp = link
-            # Show target as AGENTRX_SOURCE-relative when possible
-            agentrx_src = os.environ.get("AGENTRX_SOURCE", "")
-            if agentrx_src:
-                try:
-                    target_disp: Path | str = Path("AGENTRX_SOURCE") / target.relative_to(agentrx_src)
-                except ValueError:
-                    target_disp = target
-            else:
-                target_disp = target
-            line = f"  [link]  {target_disp}  ->  {link_disp}"
-            if len(line) <= 120:
-                click.echo(line)
-            else:
-                click.echo(f"  [link]  {target_disp}")
-                click.echo(f"       ->  {link_disp}")
-        else:
-            _make_symlink(link, target, self.verbose)
-
-    def copy_tree(self, src: Path, dst: Path) -> tuple[int, int]:
-        if self.dry_run:
-            cnt = sum(1 for f in src.rglob("*") if f.is_file() and not _is_junk(f.relative_to(src)))
-            try:
-                dst_disp = dst.relative_to(Path.cwd())
-            except ValueError:
-                dst_disp = dst
-            click.echo(f"  [copy]  {src}/  ->  {dst_disp}/  ({cnt} files)")
-            return cnt, 0
-        return _copy_tree_safe(src, dst, self.verbose)
-
-    def update_env(self, env_path: Path, values: Dict[str, str]) -> None:
-        if self.dry_run:
-            click.echo(f"  {env_path}")
-            for k, v in values.items():
-                click.echo(f"    {k}={v}")
-        else:
-            _update_env_file(env_path, values, self.verbose)
-
-
 # ---------------------------------------------------------------------------
-# Directory-setup helpers
+# Command
 # ---------------------------------------------------------------------------
 
-def _link_one_subdir(sub: str, agents_path: Path, src_agents: Path,
-                     runner: _Runner) -> None:
-    """Create the parent subdir and symlink its agentrx/ leaf."""
-    runner.mkdir(agents_path / sub)
-    src_leaf = src_agents / sub / "agentrx"
-    dst_leaf = agents_path / sub / "agentrx"
-    if not src_leaf.exists():
-        click.secho(f"    [skip] source {src_leaf} not found", fg="yellow")
-        return
-    if dst_leaf.exists() and not dst_leaf.is_symlink():
-        raise InitError(f"Cannot symlink: {dst_leaf} already exists as a real path.")
-    runner.symlink(dst_leaf, src_leaf)
 
+@click.command("init")
+@click.argument("workspace", default=".", type=click.Path())
+@click.option("--agent-files", default="_agents", help="Agent tools directory (default: _agents).")
+@click.option("--templates-dir", default=None, help="Local templates copy destination. Omit to use from $AGENTRX_SOURCE.")
+@click.option("--projects-dir", default="_projects", help="Root directory for target projects.")
+@click.option("--working-dir", default=None, help="Working docs directory. Default: <projects-dir>/arx_docs.")
+@click.option("--link-arx", is_flag=True, default=False, help="Symlink agent tools instead of copying.")
+@click.option("--docs/--no-docs", default=True, help="Install project-doc templates (default: yes).")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be done without writing.")
+def init(workspace, agent_files, templates_dir, projects_dir, working_dir, link_arx, docs, dry_run):
+    """Initialize an AgentRx workspace.
 
-def _copy_one_subdir(sub: str, agents_path: Path, src_agents: Path,
-                     runner: _Runner) -> None:
-    """Copy agentrx/ assets for one category subdir."""
-    runner.mkdir(agents_path / sub / "agentrx")
-    src_leaf = src_agents / sub / "agentrx"
-    dst_leaf = agents_path / sub / "agentrx"
-    if not src_leaf.is_dir():
-        return
-    copied, skipped = runner.copy_tree(src_leaf, dst_leaf)
-    if runner.dry_run:
-        return
-    if copied:
-        click.secho(f"    [OK] {sub}/agentrx: {copied} files", fg="green")
-    if skipped:
-        click.secho(f"    [--] {sub}/agentrx: {skipped} skipped", fg="yellow")
-
-
-def _setup_agent_tools_link(agents_path: Path, agentrx_source: str,
-                            runner: _Runner) -> None:
-    """Link mode: create parent subdirs + symlink each agentrx/ leaf.
-
-    Per README: symlinks target templates/AGENTS_TEMPLATE_SUBDIR/**/agentrx/,
-    not the live _agents/ tree.
+    WORKSPACE is the target directory (default: current directory).
     """
-    templates_dir = _find_templates_dir(agentrx_source)
-    if not templates_dir:
-        raise InitError(f"Cannot find templates/ dir in AGENTRX_SOURCE: {agentrx_source}")
-    src_agents = templates_dir / AGENTS_TEMPLATE_SUBDIR
-    if not src_agents.is_dir():
-        raise InitError(
-            f"AGENTRX_SOURCE templates has no {AGENTS_TEMPLATE_SUBDIR}/ dir: {templates_dir}"
-        )
-    click.secho("  Creating deep symlinks to AgentRx assets...", fg="cyan")
-    for sub in AGENT_SUBDIRS:
-        _link_one_subdir(sub, agents_path, src_agents, runner)
+    root = Path(workspace).resolve()
+    root.mkdir(parents=True, exist_ok=True)
 
+    tmpl_src = _template_source()
 
-def _setup_agent_tools_copy(agents_path: Path, agentrx_source: Optional[str],
-                            runner: _Runner) -> None:
-    """Copy mode: create standard category skeleton under agents_path.
+    # Resolve key paths
+    agent_files_path = root / agent_files
+    projects_path = root / projects_dir
+    working_path = Path(working_dir) if working_dir else projects_path / "arx_docs"
+    if not working_path.is_absolute():
+        working_path = root / working_path
 
-    Per README: file contents come from templates/AGENTS_TEMPLATE_SUBDIR/ via
-    _copy_templates routing.  Here we ensure the skeleton dirs exist and warn
-    if the source template directory appears empty (e.g. broken submodule).
-    """
-    for sub in AGENT_SUBDIRS:
-        runner.mkdir(agents_path / sub)
-
-    # Warn when the agent-tools template source has no copyable content.
-    templates_dir = _find_templates_dir(agentrx_source)
     if templates_dir:
-        src_agents = templates_dir / AGENTS_TEMPLATE_SUBDIR
-        if src_agents.is_dir():
-            has_files = any(
-                f.is_file() and not _is_junk(f.relative_to(templates_dir))
-                for f in src_agents.rglob("*")
-            )
-            if not has_files:
-                click.secho(
-                    f"  Warning: {AGENTS_TEMPLATE_SUBDIR}/ exists but contains no files.\n"
-                    f"  Agent tools directories will be empty.\n"
-                    f"  (If this is a fresh clone, you may need to initialise the submodule:\n"
-                    f"    git submodule update --init)",
-                    fg="yellow",
-                )
-        elif not src_agents.exists():
-            click.secho(
-                f"  Warning: template directory {AGENTS_TEMPLATE_SUBDIR}/ not found in {templates_dir}.\n"
-                f"  Agent tools directories will be empty.",
-                fg="yellow",
-            )
-
-
-def _setup_agent_tools(agents_path: Path, link_arx: bool,
-                       agentrx_source: Optional[str], runner: _Runner) -> None:
-    """Create or leave the agent-tools directory tree.
-
-    EXISTS   -> leave untouched (per README spec).
-    MISSING + link mode  -> parent subdirs only; symlink each agentrx/ leaf.
-    MISSING + copy mode  -> full skeleton; copy agentrx/ files from source.
-    """
-    already_exists = agents_path.exists()
-    runner.mkdir(agents_path)
-    if already_exists:
-        return
-    if link_arx:
-        if not agentrx_source:
-            raise InitError("--link-arx requires --agentrx-source or the AGENTRX_SOURCE env var.")
-        _setup_agent_tools_link(agents_path, agentrx_source, runner)
+        local_tmpl = root / templates_dir
     else:
-        _setup_agent_tools_copy(agents_path, agentrx_source, runner)
+        local_tmpl = None  # use from source
 
+    # Resolve effective template source (local copy or $AGENTRX_SOURCE)
+    effective_tmpl = local_tmpl if local_tmpl else tmpl_src
 
-def _setup_project_dir(proj_path: Path, runner: _Runner) -> None:
-    """Create target project directory (and src/) if absent; leave alone if exists."""
-    already_exists = proj_path.exists()
-    runner.mkdir(proj_path)
-    if not already_exists:
-        runner.mkdir(proj_path / "src")
-
-
-def _setup_docs_dir(docs_path: Path, runner: _Runner) -> None:
-    """Create docs output directory (with artifact subdirs) if absent."""
-    already_exists = docs_path.exists()
-    runner.mkdir(docs_path)
-    if not already_exists:
-        for sub in ("deltas", "vibes", "history", "sessions", "tasks_tracking"):
-            runner.mkdir(docs_path / sub)
-
-
-def _write_template_item(item: Path, dst: Path, context: Dict[str, Any],
-                         runner: _Runner, label: Optional[str] = None,
-                         src_display: Optional[Path] = None) -> None:
-    """Write a single template file (text or binary) to *dst*."""
-    try:
-        text = _safe_mustache_render(item.read_text(encoding="utf-8"), context)
-        runner.write(dst, text, skip_existing=True, label=label, src=src_display or item)
-    except UnicodeDecodeError:
-        src = src_display or item
-        if runner.dry_run:
-            from_dir = str(Path(src).parent)
-            try:
-                to_dir = str(dst.parent.relative_to(Path.cwd()))
-            except ValueError:
-                to_dir = str(dst.parent)
-            runner._write_copy_line(Path(src).name + "  (binary)", from_dir, to_dir)
-        else:
-            shutil.copy2(item, dst)
-            if runner.verbose:
-                click.echo(f"    [OK] binary {dst}")
-
-
-def _templates_display(templates_dir: Path, agentrx_source: Optional[str]) -> Path:
-    """Return a short display path for the templates directory header."""
-    if agentrx_source:
-        try:
-            return templates_dir.relative_to(Path(agentrx_source))
-        except ValueError:
-            pass
-    try:
-        return templates_dir.relative_to(Path.cwd())
-    except ValueError:
-        return templates_dir
-
-
-def _install_docs_skeleton(
-    proj_docs_path: Path,
-    agentrx_source: Optional[str],
-    context: Dict[str, Any],
-    runner: "_Runner",
-) -> bool:
-    """Copy docs skeleton templates into *proj_docs_path*.
-
-    Files come from ``templates/PROJ_DOCS_TEMPLATE_SUBDIR/``.  The ``.ARX.``
-    marker is stripped from filenames on the way out.  Already-existing files
-    are skipped (``skip_existing=True``).
-
-    Returns True if the skeleton source directory was found, False otherwise.
-    """
-    templates_dir = _find_templates_dir(agentrx_source)
-    if not templates_dir:
-        return False
-    docs_src = templates_dir / PROJ_DOCS_TEMPLATE_SUBDIR
-    if not docs_src.exists():
-        return False
-
-    for item in sorted(docs_src.rglob("*")):
-        if item.is_dir():
-            continue
-        rel = item.relative_to(docs_src)
-        if _is_junk(rel):
-            continue
-        stripped_name = _strip_arx_marker(rel.name)
-        dst_rel = rel.parent / stripped_name
-        dst = proj_docs_path / dst_rel
-        if dst.parent != proj_docs_path and not dst.parent.exists():
-            runner.mkdir(dst.parent)
-        _write_template_item(
-            item, dst, context, runner,
-            label=str(dst_rel),
-            src_display=Path("templates") / PROJ_DOCS_TEMPLATE_SUBDIR / rel,
-        )
-    return True
-
-
-def _preview_docs_skeleton(
-    proj_docs_path: Path,
-    agentrx_source: Optional[str],
-) -> None:
-    """Print a tree-style preview of the docs files that would be created."""
-    templates_dir = _find_templates_dir(agentrx_source)
-    if not templates_dir:
-        click.echo("  (no docs skeleton found)")
-        return
-    docs_src = templates_dir / PROJ_DOCS_TEMPLATE_SUBDIR
-    if not docs_src.exists():
-        click.echo(f"  (docs template dir not found: {docs_src})")
-        return
-
-    click.echo(f"  {proj_docs_path}/")
-    for item in sorted(docs_src.rglob("*")):
-        if item.is_dir():
-            continue
-        rel = item.relative_to(docs_src)
-        if _is_junk(rel):
-            continue
-        stripped_name = _strip_arx_marker(rel.name)
-        dst_rel = rel.parent / stripped_name
-        depth = len(dst_rel.parts)
-        indent = "    " + "    " * (depth - 1)
-        marker = "└── " if depth > 1 else "├── "
-        click.echo(f"  {indent}{marker}{dst_rel.name}")
-
-
-def _copy_templates(
-    root: Path,
-    agents_path: Path,
-    work_docs_path: Path,
-    agentrx_source: Optional[str],
-    context: Dict[str, Any],
-    runner: _Runner,
-    link_arx: bool = False,
-) -> None:
-    """Process templates/ and route each subdir to its ARX_* destination.
-
-    Routing table (template subdir → destination, strip_arx, arx_only):
-      WORKSPACE_ROOT_TEMPLATE_SUBDIR → *root*          strip=True  arx_only=True
-      AGENTS_TEMPLATE_SUBDIR         → *agents_path*   strip=False arx_only=False
-      WORK_DOCS_TEMPLATE_SUBDIR      → *work_docs_path* strip=True arx_only=False
-      PROJ_DOCS_TEMPLATE_SUBDIR      → skipped (handled by _install_docs_skeleton)
-
-    strip=True  : strip .ARX./.arx. marker from destination filename.
-    arx_only=True: skip files that lack the .ARX./.arx. marker (workspace-root
-                   bare files are templates-dir documentation, not installed).
-    .git and OS junk paths are always skipped.
-    """
-    templates_dir = _find_templates_dir(agentrx_source)
-    if not templates_dir:
-        return
-
-    # (destination_base, strip_marker, arx_only)
-    routing: dict[str, tuple[Path, bool, bool]] = {
-        WORKSPACE_ROOT_TEMPLATE_SUBDIR: (root,           True,  True),
-        AGENTS_TEMPLATE_SUBDIR:         (agents_path,    False, False),
-        WORK_DOCS_TEMPLATE_SUBDIR:      (work_docs_path, True,  False),
+    # Build environment variables
+    env_vars = {
+        "AGENTRX_SOURCE": os.environ.get("AGENTRX_SOURCE", ""),
+        "ARX_ROOT": str(root),
+        "ARX_AGENT_FILES": str(agent_files_path),
+        "ARX_TEMPLATES": str(effective_tmpl),
+        "ARX_WORKING": str(working_path),
     }
-    # PROJ_DOCS_TEMPLATE_SUBDIR is handled exclusively by _install_docs_skeleton
 
-    tmpl_disp = _templates_display(templates_dir, agentrx_source)
-    click.echo()
-    click.secho(f"Templates  ({tmpl_disp}):", fg="cyan")
+    # Build config
+    config = {
+        "arx_root": str(root),
+        "agent_files": str(agent_files_path),
+        "templates": str(effective_tmpl),
+        "projects_dir": str(projects_path),
+        "working_dir": str(working_path),
+        "projects": {},
+    }
 
-    for item in sorted(templates_dir.rglob("*")):
-        if item.is_dir():
-            continue
-        rel = item.relative_to(templates_dir)
-        if _is_junk(rel):
-            continue
+    # Auto-detect existing project subdirectories
+    if projects_path.is_dir():
+        for child in sorted(projects_path.iterdir()):
+            if child.is_dir() and not child.name.startswith("."):
+                abbr = child.name.replace("-", "_").upper()
+                config["projects"][child.name] = {
+                    "path": str(child),
+                    "abbr": abbr,
+                }
+                env_vars[f"ARX_{abbr}"] = str(child)
 
-        # Must be inside a known routing subdir
-        top = rel.parts[0] if rel.parts else ""
-        if top not in routing:
-            continue  # unknown subdir, or bare root file — skip
-
-        # In link mode the agents subtree is already symlinked; skip copying
-        if link_arx and top == AGENTS_TEMPLATE_SUBDIR:
-            continue
-
-        dst_base, do_strip, arx_only = routing[top]
-        rel_in_dst = rel.relative_to(top)
-
-        # arx_only: skip files without .ARX./.arx. marker (templates-dir docs)
-        has_arx = ".ARX." in rel.name or ".arx." in rel.name or rel.name.endswith(".arx")
-        if arx_only and not has_arx:
-            continue
-
-        if do_strip and has_arx:
-            stripped = _strip_arx_marker(rel_in_dst.name)
-            # Handle .arx suffix files (e.g. .cursorrules.arx → .cursorrules)
-            if stripped == rel_in_dst.name and rel_in_dst.name.endswith(".arx"):
-                stripped = rel_in_dst.name[: -len(".arx")]
-            if stripped != rel_in_dst.name:
-                rel_in_dst = rel_in_dst.parent / stripped
-
-        dst = dst_base / rel_in_dst
-        if dst.parent != dst_base and not dst.parent.exists():
-            runner.mkdir(dst.parent)
-        _write_template_item(item, dst, context, runner,
-                             label=str(rel_in_dst),
-                             src_display=Path("templates") / rel)
-
-
-# ---------------------------------------------------------------------------
-# Click command
-# ---------------------------------------------------------------------------
-
-@click.command()
-@click.argument("target_dir", default=".", type=click.Path())
-@click.option("-l", "--link-arx", "link_arx", is_flag=True,
-              help="Symlink agentrx/ assets from AGENTRX_SOURCE instead of copying.")
-@click.option("-v", "--verbose", is_flag=True, help="Show detailed output.")
-@click.option("--dry-run", "dry_run", is_flag=True,
-              help="Print planned actions without making any changes.")
-@click.option("--agentrx-source", envvar="AGENTRX_SOURCE",
-              type=click.Path(exists=True),
-              help="AgentRx source directory (required with --link-arx; optional for copy).")
-@click.option("--agents-dir", "agents_dir", envvar=ENV_AGENT_TOOLS, type=str,
-              help=f"Agent-tools dir.  Env: {ENV_AGENT_TOOLS}  [default: {DEFAULT_AGENTS_DIR}]")
-@click.option("--target-proj", "target_proj", envvar=ENV_TARGET_PROJ, type=str,
-              help=f"Target project dir.  Env: {ENV_TARGET_PROJ}  [default: {DEFAULT_PROJECT_DIR}]")
-@click.option("--proj-docs", "proj_docs", envvar=ENV_PROJ_DOCS, type=str,
-              help=f"Project docs dir.  Env: {ENV_PROJ_DOCS}  [default: {DEFAULT_PROJ_DOCS}]")
-@click.option("--work-docs", "work_docs", envvar=ENV_WORK_DOCS, type=str,
-              help=f"Working docs dir (vibes/deltas/history).  Env: {ENV_WORK_DOCS}  [default: {DEFAULT_WORK_DOCS}]")
-@click.option("--data", "data_path", type=str,
-              help="YAML file with template variables, or '-' for stdin.")
-@click.option("--docs/--no-docs", "install_docs", default=None,
-              help="Install documentation skeleton into ARX_PROJ_DOCS (default: ask interactively).")
-def init(
-    target_dir: str,
-    link_arx: bool,
-    verbose: bool,
-    dry_run: bool,
-    agentrx_source: Optional[str],
-    agents_dir: Optional[str],
-    target_proj: Optional[str],
-    proj_docs: Optional[str],
-    work_docs: Optional[str],
-    data_path: Optional[str],
-    install_docs: Optional[bool],
-) -> None:
-    """Initialize an AgentRx project structure.
-
-    \b
-    TARGET_DIR  Workspace root to initialise (default: current directory).
-                ARX_WORKSPACE_ROOT is always set to this path.
-
-    \b
-    Directory rules (per README):
-      ARX_AGENT_TOOLS  exists -> left untouched.
-      ARX_AGENT_TOOLS  missing, copy mode -> created with full agentrx/ skeleton.
-                                             Files copied from AGENTRX_SOURCE if set.
-      ARX_AGENT_TOOLS  missing, --link-arx -> parent subdirs created (no agentrx/ leaf).
-                                             Each agentrx/ subdir symlinked to source.
-      ARX_TARGET_PROJ  exists -> left untouched.
-      ARX_TARGET_PROJ  missing -> created (with src/ inside).
-      ARX_PROJ_DOCS    exists -> left untouched.
-      ARX_PROJ_DOCS    missing -> created.
-      ARX_WORK_DOCS    exists -> left untouched.
-      ARX_WORK_DOCS    missing -> created (with deltas/, vibes/, history/).
-
-    \b
-    A .env is always written/updated in TARGET_DIR with the five ARX_* variables.
-    Root-level *.ARX.* templates are installed (with .ARX. stripped) only if absent.
-    CLAUDE.md and CHAT_START.md are written from built-in defaults only if absent.
-
-    \b
-    Examples:
-      arx init
-      arx init /path/to/project
-      arx init --link-arx --agentrx-source ~/dev/agentrx-src
-      arx init --agents-dir ~/dev/agentrx-src --target-proj ~/dev/myproj --dry-run
-    """
-    try:
-        _run_init(
-            target_dir=target_dir,
-            link_arx=link_arx,
-            verbose=verbose,
-            dry_run=dry_run,
-            agentrx_source=agentrx_source,
-            agents_dir=agents_dir,
-            target_proj=target_proj,
-            proj_docs=proj_docs,
-            work_docs=work_docs,
-            data_path=data_path,
-            install_docs=install_docs,
-        )
-    except InitError as exc:
-        click.secho(f"\nError: {exc}", fg="red", err=True)
-        sys.exit(1)
-
-
-# ---------------------------------------------------------------------------
-# Resolve dirs (may be interactive)
-# ---------------------------------------------------------------------------
-
-def _resolve_dirs(
-    root: Path,
-    agents_dir: Optional[str],
-    target_proj: Optional[str],
-    proj_docs: Optional[str],
-    work_docs: Optional[str],
-    interactive: bool,
-) -> tuple[Path, Path, Path, Path]:
-    def _env(name: str, default: str) -> str:
-        return os.environ.get(name, default)
-
-    if interactive and sys.stdin.isatty():
-        click.secho("Directory configuration (Enter to accept defaults)", fg="cyan")
-        a = click.prompt(
-            f"  {ENV_AGENT_TOOLS}",
-            default=agents_dir or _env(ENV_AGENT_TOOLS, DEFAULT_AGENTS_DIR),
-        )
-        p = click.prompt(
-            f"  {ENV_TARGET_PROJ}",
-            default=target_proj or _env(ENV_TARGET_PROJ, DEFAULT_PROJECT_DIR),
-        )
-        pd_default = proj_docs or _env(ENV_PROJ_DOCS, f"{p}/docs")
-        pd = click.prompt(f"  {ENV_PROJ_DOCS}", default=pd_default)
-        wd_default = work_docs or _env(ENV_WORK_DOCS, f"{pd}/agentrx")
-        wd = click.prompt(f"  {ENV_WORK_DOCS}", default=wd_default)
-        click.echo()
-    else:
-        a  = agents_dir  or _env(ENV_AGENT_TOOLS, DEFAULT_AGENTS_DIR)
-        p  = target_proj or _env(ENV_TARGET_PROJ,  DEFAULT_PROJECT_DIR)
-        pd = proj_docs   or _env(ENV_PROJ_DOCS,    DEFAULT_PROJ_DOCS)
-        wd = work_docs   or _env(ENV_WORK_DOCS,    DEFAULT_WORK_DOCS)
-
-    def _abs(val: str, base: Path) -> Path:
-        v = Path(val).expanduser()
-        return v if v.is_absolute() else base / v
-
-    return _abs(a, root), _abs(p, root), _abs(pd, root), _abs(wd, root)
-
-
-# ---------------------------------------------------------------------------
-# Main implementation
-# ---------------------------------------------------------------------------
-
-def _run_init(
-    target_dir: str,
-    link_arx: bool,
-    verbose: bool,
-    dry_run: bool,
-    agentrx_source: Optional[str],
-    agents_dir: Optional[str],
-    target_proj: Optional[str],
-    proj_docs: Optional[str],
-    work_docs: Optional[str],
-    data_path: Optional[str],
-    install_docs: Optional[bool] = None,
-) -> None:
-    root = Path(target_dir).resolve()
-    runner = _Runner(dry_run=dry_run, verbose=verbose)
-
-    # ── header ────────────────────────────────────────────────────────────────
-    click.echo()
-    click.secho("AgentRx Project Initialization", fg="blue", bold=True)
-    click.echo("=" * 44)
-    click.echo(f"  {ENV_WORKSPACE_ROOT:20s} = {root}")
-    click.echo(f"  Mode                 = {'link (--link-arx)' if link_arx else 'copy (default)'}")
-    if agentrx_source:
-        click.echo(f"  AGENTRX_SOURCE       = {agentrx_source}")
     if dry_run:
-        click.secho("  ** DRY RUN – no changes will be made **", fg="yellow", bold=True)
-    click.echo()
+        click.echo("Dry run — the following actions would be taken:\n")
+        click.echo(f"  Workspace root : {root}")
+        click.echo(f"  Agent files    : {agent_files_path}")
+        click.echo(f"  Templates      : {effective_tmpl}")
+        click.echo(f"  Projects       : {projects_path}")
+        click.echo(f"  Working docs   : {working_path}")
+        click.echo(f"  Link mode      : {link_arx}")
+        click.echo(f"  Install docs   : {docs}")
+        click.echo(f"\n  .env variables:")
+        for k, v in sorted(env_vars.items()):
+            click.echo(f"    {k}={v}")
+        return
 
-    # ── ensure root exists ────────────────────────────────────────────────────
-    if not root.exists():
-        runner.mkdir(root)
+    # 1. Copy local templates if requested
+    if local_tmpl:
+        click.echo(f"Copying templates → {local_tmpl}")
+        _copy_tree(tmpl_src, local_tmpl)
 
-    # ── resolve directory paths (may prompt interactively) ────────────────────
-    interactive = (agents_dir is None and target_proj is None
-                   and proj_docs is None and work_docs is None)
-    agents_path, proj_path, proj_docs_path, work_docs_path = _resolve_dirs(
-        root, agents_dir, target_proj, proj_docs, work_docs, interactive
-    )
+    # 2. Workspace root files (.ARX. stripped, only if absent)
+    ws_root_tmpl = effective_tmpl / "_arx_workspace_root.arx"
+    if ws_root_tmpl.is_dir():
+        click.echo(f"Installing workspace root files → {root}")
+        _copy_tree(ws_root_tmpl, root, only_if_absent=True)
 
-    click.secho("Resolved paths:", fg="cyan")
-    click.echo(f"  {ENV_AGENT_TOOLS:20s} = {agents_path}")
-    click.echo(f"  {ENV_TARGET_PROJ:20s} = {proj_path}")
-    click.echo(f"  {ENV_PROJ_DOCS:20s} = {proj_docs_path}")
-    click.echo(f"  {ENV_WORK_DOCS:20s} = {work_docs_path}")
-    click.echo()
+    # 3. Agent tools (copy or symlink)
+    agent_tmpl = effective_tmpl / "_arx_agent_tools.arx"
+    if agent_tmpl.is_dir():
+        click.echo(f"Installing agent tools → {agent_files_path}")
+        _copy_tree(agent_tmpl, agent_files_path, link=link_arx)
 
-    # ── load YAML template context ────────────────────────────────────────────
-    context: Dict[str, Any] = _load_yaml(data_path)
+    # 4. Working docs (always copied)
+    work_tmpl = effective_tmpl / "_arx_work_docs.arx"
+    if work_tmpl.is_dir():
+        click.echo(f"Installing working docs → {working_path}")
+        _copy_tree(work_tmpl, working_path)
 
-    # ── set up directories ────────────────────────────────────────────────────
-    click.secho("Directories:", fg="cyan")
-    _setup_agent_tools(agents_path, link_arx, agentrx_source, runner)
-    _setup_project_dir(proj_path, runner)
-    runner.mkdir(proj_docs_path)
-    _setup_docs_dir(work_docs_path, runner)
+    # 5. Project docs (optional)
+    if docs:
+        proj_tmpl = effective_tmpl / "_arx_proj_docs.arx"
+        if proj_tmpl.is_dir():
+            # Install into each known project, or into projects_path if none
+            targets = [Path(p["path"]) for p in config["projects"].values()] or [projects_path]
+            for proj_path in targets:
+                dest = proj_path / "docs"
+                click.echo(f"Installing project docs → {dest}")
+                _copy_tree(proj_tmpl, dest)
 
-    # ── copy / process templates ──────────────────────────────────────────────
-    _copy_templates(root, agents_path, work_docs_path, agentrx_source, context, runner,
-                    link_arx=link_arx)
+    # 6. Create directory structure
+    for d in [agent_files_path, projects_path, working_path]:
+        d.mkdir(parents=True, exist_ok=True)
 
-    # ── root bootstrap files ──────────────────────────────────────────────────
-    # AGENTS.md, AGENT_TOOLS.md, and .cursorrules come from
-    # _arx_workspace_root.arx/ via _copy_templates above.
-    # CLAUDE.md is also in _arx_workspace_root.arx/CLAUDE.ARX.md; fall back to
-    # the inline default only when no AGENTRX_SOURCE was provided.
-    click.echo()
-    click.secho("Bootstrap files:", fg="cyan")
-    templates_dir_bs = _find_templates_dir(agentrx_source)
-    claude_from_template = (
-        templates_dir_bs is not None
-        and (templates_dir_bs / WORKSPACE_ROOT_TEMPLATE_SUBDIR / "CLAUDE.ARX.md").exists()
-    )
-    if not claude_from_template:
-        for fname, content in [
-            ("CLAUDE.md", CLAUDE_MD_TEMPLATE),
-        ]:
-            runner.write(root / fname, content, skip_existing=True, label=fname)
+    for subdir in ["vibes", "deltas", "sessions", "tasks"]:
+        (working_path / subdir).mkdir(parents=True, exist_ok=True)
 
-    # ── .env (always written / updated) ──────────────────────────────────────
-    click.echo()
-    click.secho(".env:", fg="cyan")
-    runner.update_env(root / ".env", {
-        ENV_WORKSPACE_ROOT: str(root),
-        ENV_AGENT_TOOLS:  str(agents_path),
-        ENV_TARGET_PROJ:  str(proj_path),
-        ENV_PROJ_DOCS:    str(proj_docs_path),
-        ENV_WORK_DOCS:    str(work_docs_path),
-    })
+    # 7. Write .env and config
+    _write_env(root, env_vars)
+    click.echo(f"Wrote {root / '.env'}")
 
-    # ── summary ───────────────────────────────────────────────────────────────
-    click.echo()
-    click.echo("=" * 44)
-    if dry_run:
-        click.secho("Dry run complete – no changes made.", fg="yellow", bold=True)
-    else:
-        click.secho("AgentRx initialized successfully!", fg="green", bold=True)
-    click.echo()
-    click.echo("Next steps:")
-    click.echo("  1. Review AGENTS.md and CLAUDE.md")
-    click.echo(f"  2. Add your project code under {proj_path}/")
-    click.echo("  3. Use /agentrx:prompt-new to create prompts")
-    click.echo()
+    _write_config(root, config)
+    click.echo(f"Wrote {root / 'arx.config.yaml'}")
 
-    # ── optional docs skeleton ────────────────────────────────────────────────
-    templates_dir = _find_templates_dir(agentrx_source)
-    docs_src = (templates_dir / PROJ_DOCS_TEMPLATE_SUBDIR) if templates_dir else None
-    if docs_src and docs_src.exists():
-        click.echo("─" * 44)
-        click.secho("Optional: Documentation Skeleton", fg="cyan", bold=True)
-        click.echo(
-            f"\nWould you like to install a starter docs skeleton into:\n"
-            f"  {proj_docs_path}/\n"
-        )
-        _preview_docs_skeleton(proj_docs_path, agentrx_source)
-        click.echo()
-
-        if dry_run:
-            click.secho(
-                "(Dry run — skipping docs skeleton prompt.)", fg="yellow"
-            )
-        else:
-            if install_docs is None:
-                install_docs = click.confirm(
-                    "Install documentation skeleton?", default=False
-                )
-            if install_docs:
-                click.echo()
-                click.secho("Docs skeleton:", fg="cyan")
-                _install_docs_skeleton(proj_docs_path, agentrx_source, context, runner)
-                click.secho("Documentation skeleton installed.", fg="green")
-            else:
-                click.echo("Skipped. You can add docs manually later.")
-        click.echo()
+    click.echo(f"\nWorkspace initialized at {root}")
