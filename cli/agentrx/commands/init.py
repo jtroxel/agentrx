@@ -8,10 +8,13 @@ Template subdirectory mapping (from ``$AGENTRX_SOURCE/_arx_templates/``):
 
 | Subdir                       | Destination            | Behaviour                              |
 |------------------------------|------------------------|----------------------------------------|
-| ``_arx_workspace_root.arx/`` | ``$ARX_ROOT``          | ``.ARX.`` stripped; only if absent      |
+| ``_arx_workspace_root.arx/`` | ``$ARX_ROOT``          | Copied as-is; only if absent           |
 | ``_arx_agent_tools.arx/``    | ``$ARX_AGENT_FILES``   | Copied (or symlinked with --link-arx)  |
 | ``_arx_work_docs.arx/``      | ``$ARX_WORKING``       | Always copied                          |
 | ``_arx_proj_docs.arx/``      | ``$ARX_PROJ_DOCS``     | Optional (--docs / --no-docs)          |
+
+Files/dirs with ``.arx.`` in the name (or ending in ``.arx``) are source-only
+and are **skipped** during copy.  Everything else is copied verbatim.
 """
 
 from __future__ import annotations
@@ -29,9 +32,6 @@ from ..render import render_file
 # Helpers
 # ---------------------------------------------------------------------------
 
-_ARX_DOT_RE_STRIP = ".ARX."  # literal substring stripped from filenames
-
-
 def _template_source() -> Path:
     """Resolve the ``_arx_templates`` directory inside ``$AGENTRX_SOURCE``."""
     src = os.environ.get("AGENTRX_SOURCE")
@@ -46,25 +46,21 @@ def _template_source() -> Path:
     return p
 
 
-def _dest_name(name: str) -> str:
-    """Strip the ``.ARX.`` marker from a filename.
+def _is_source_only(name: str) -> bool:
+    """Return True if *name* is a source-only file/dir (has ``.arx.`` or ends with ``.arx``).
 
-    ``AGENTS.ARX.md`` → ``AGENTS.md``
-    ``.cursorrules.arx`` → ``.cursorrules``
+    Source-only items are skipped during copy.  Everything else is copied as-is.
     """
-    if _ARX_DOT_RE_STRIP in name:
-        return name.replace(_ARX_DOT_RE_STRIP, ".")
-    if name.endswith(".arx"):
-        return name[: -len(".arx")]
-    return name
+    return ".arx." in name or name.endswith(".arx")
 
 
 def _copy_tree(src: Path, dst: Path, *, only_if_absent: bool = False, link: bool = False):
-    """Recursively copy *src* into *dst*, applying ``.ARX.`` stripping."""
+    """Recursively copy *src* into *dst*, skipping source-only (``.arx``) items."""
     dst.mkdir(parents=True, exist_ok=True)
     for item in src.iterdir():
-        target_name = _dest_name(item.name)
-        target = dst / target_name
+        if _is_source_only(item.name):
+            continue
+        target = dst / item.name
         if item.is_dir():
             _copy_tree(item, target, only_if_absent=only_if_absent, link=link)
         else:
@@ -179,7 +175,7 @@ def init(workspace, agent_files, templates_dir, projects_dir, working_dir, link_
         click.echo(f"Copying templates → {local_tmpl}")
         _copy_tree(tmpl_src, local_tmpl)
 
-    # 2. Workspace root files (.ARX. stripped, only if absent)
+    # 2. Workspace root files (copied as-is, only if absent)
     ws_root_tmpl = effective_tmpl / "_arx_workspace_root.arx"
     if ws_root_tmpl.is_dir():
         click.echo(f"Installing workspace root files → {root}")

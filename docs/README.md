@@ -40,18 +40,13 @@ arx adapt pi --with-agent # or claude, copilot, codex, opencode
 **From the CLI (outside an agent session)**
 ```bash
 # Run a finished prompt
-arx prompt do $ARX_WORKING/$ARX_MYPROJ/vibes/another_prompt.yaml pi
-# ... $ARX_MYPROJ (set in .env) is the project abbreviation, `pi` is the agent
+arx prompt do $ARX_WORKING/vibes/another_prompt.md
+# ... renders the :do phase and outputs to stdout
 
 # Create a prompt from a template
 arx prompt new arch-facet --data '{"component": "auth-service"}'
 # ... resolves a template from $ARX_TEMPLATES by name
-# ... renders with provided data context, writes to vibes/
-
-# Create from a mustache template programmatically
-arx tmpl --mustache-only $ARX_TMPL/$ARX_MYPROJ/my_mustache_templ.yaml > $ARX_WORKING/$ARX_MYPROJ/vibes/another_prompt.yaml
-# ... --mustache-only evaluates mustache templates only
-# ... use --conf <yaml_file> to supply custom template variables
+# ... renders the :new phase, writes to $ARX_WORKING/vibes/
 
 # List recent prompts
 arx prompt list -n 10
@@ -101,7 +96,18 @@ The shell that the init-arx was run in will have the following variables. These 
 └── _arx_templates/          # $ARX_TEMPLATES, default to _arx_templates - prompt and context markdown templates
 
 ```
-**The `init-arx` command initializes the workspace structure.** 
+**The `init-arx` command initializes the workspace structure.** See `cli/README.md` for the full interactive flow and non-interactive options.
+
+### Template Naming Convention
+
+Inside `_arx_templates/`, files with **normal names** are copied to the workspace. Files or directories with `.arx.` in the name (or ending in `.arx`) are **source-only** and skipped during copy.
+
+| Template subdir | Destination | Behaviour |
+|---|---|---|
+| `_arx_workspace_root.arx/` | `$ARX_ROOT` | Copied as-is; only installed if absent |
+| `_arx_agent_tools.arx/` | `$ARX_AGENT_FILES` | Copied as-is (or symlinked with `--link-arx`) |
+| `_arx_work_docs.arx/` | `$ARX_WORKING` | Always copied |
+| `_arx_proj_docs.arx/` | project `docs/` dirs | Optional (`--docs`/`--no-docs`) |
 
 ## CLI Commands - Examples
 Note: After initializing the workspace.
@@ -126,14 +132,14 @@ Once the workspace is initialized, your coding agent needs to discover the Agent
 Work with prompt files — create, execute, and list.
 
 ```bash
-arx prompt new [TEMPLATE] [TEXT] [--data JSON] [--data-file FILE]
+arx prompt new [TEMPLATE] [TEXT] [--data JSON] [--data-file FILE] [--stdin] [-o PATH]
 # - option to use a template from $ARX_TEMPLATES by subdir, e.g.: arch-facet or readme-0
 # - templates are evaluated programmatically (ARX tags + env vars)
 # - mustache {{...}} blocks are passed through for agent-side evaluation
 
-arx prompt do [PROMPT_FILE] [--data JSON] [--data-file FILE] [--dry-run]
+arx prompt do PROMPT_FILE [--data JSON] [--data-file FILE] [--stdin] [--dry-run] [-o PATH]
 # - renders the prompt with data context and outputs to stdout or file
-# - data sources merge in order: data-file < --data JSON < stdin
+# - data sources merge in order: data-file < --data JSON < stdin (with --stdin)
 
 arx prompt list [-n LIMIT] [--dir DIR]
 # - shows recent prompt files with relative age (e.g., "2h ago", "3d ago")
@@ -156,17 +162,27 @@ Three-step processing pipeline:
 1. **Strip YAML front matter** (`---` blocks) — returned separately
 2. **Expand env vars**: `$VAR` and `${VAR}` from `os.environ`
 3. **Resolve ARX tags**:
-   - `<ARX:IF [[expr]]>`... `</ARX:IF>`
-   - `<ARX:REPLACE agent: agent-name, "prompt text">`... `</ARX:REPLACE>`
+   - `<ARX [[expr]] />` — variable substitution (self-closing)
+   - `<ARX:IF [[expr]]>`...`</ARX:IF>` — conditional blocks
+   - `<ARX:REPLACE agent: agent-name, "prompt text">`...`</ARX:REPLACE>` — agent-side replacement
 
-Tag expression types:
+**Expression types** (inside `[[...]]`):
+- Simple: `[[name]]`
 - Dot notation: `[[user.profile.name]]`
+- Array index: `[[items.0]]`
 - Default values: `[[key | "default"]]`
 - Environment: `[[env.VAR_NAME]]`
 
+**Phase annotations** control when expressions resolve:
+- `<ARX [[project.name]] :new />` — resolved at prompt creation time (`arx prompt new`)
+- `<ARX [[runtime.data]] :do />` — resolved at prompt execution time (`arx prompt do`)
+- `<ARX [[eager.value]] />` — resolved whenever data is available
+
+Unresolved tags are preserved for later phases.
+
 Mustache `{{...}}` block directives are passed through unchanged — structural evaluation is handled agent-side.
 
-Public API:
+**Public API:**
 - `render(text, data, phase)` → rendered string
 - `render_file(path, data, phase)` → (front_matter, rendered_body)
 - `build_context(data_json, data_file, stdin_json)` → merged dict
@@ -180,7 +196,15 @@ The workspace configuration file, created by `init-arx`. Stores project paths, p
 
 Example:
 ```yaml
-TODO
+arx_root: /home/user/my-workspace
+agent_files: /home/user/my-workspace/_agents
+templates: /home/user/agentrx-src/_arx_templates
+projects_dir: /home/user/my-workspace/_projects
+working_dir: /home/user/my-workspace/_projects/arx_docs
+projects:
+  my-app:
+    path: /home/user/my-workspace/_projects/my-app
+    abbr: MY_APP
 ```
 
 ### .env file

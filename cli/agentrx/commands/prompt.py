@@ -135,14 +135,15 @@ def prompt():
 @click.argument("text", required=False)
 @click.option("--data", "data_json", default=None, help="Inline JSON data context.")
 @click.option("--data-file", default=None, type=click.Path(exists=True), help="YAML/JSON data file.")
+@click.option("--stdin", "read_stdin", is_flag=True, default=False, help="Read additional JSON data from stdin.")
 @click.option("-o", "--output", "output_path", default=None, type=click.Path(), help="Output file path (overrides default).")
-def prompt_new(template, text, data_json, data_file, output_path):
+def prompt_new(template, text, data_json, data_file, read_stdin, output_path):
     """Create a new prompt file from a template or plain text.
 
     TEMPLATE is a template name resolved from $ARX_TEMPLATES (e.g. arch-facet).
     TEXT is optional plain text to use as the prompt body (instead of a template).
     """
-    ctx = build_context(data_json=data_json, data_file=data_file, stdin_json=True)
+    ctx = build_context(data_json=data_json, data_file=data_file, stdin_json=read_stdin)
 
     if template:
         # Resolve and render from template
@@ -198,14 +199,15 @@ def prompt_new(template, text, data_json, data_file, output_path):
 @click.option("--data", "data_json", default=None, help="Inline JSON data context.")
 @click.option("--data-file", default=None, type=click.Path(exists=True), help="YAML/JSON data file.")
 @click.option("--dry-run", is_flag=True, default=False, help="Preview rendered output without side effects.")
+@click.option("--stdin", "read_stdin", is_flag=True, default=False, help="Read additional JSON data from stdin.")
 @click.option("-o", "--output", "output_path", default=None, type=click.Path(), help="Write output to file instead of stdout.")
-def prompt_do(prompt_file, data_json, data_file, dry_run, output_path):
+def prompt_do(prompt_file, data_json, data_file, dry_run, read_stdin, output_path):
     """Execute (render) an existing prompt file.
 
     Renders the prompt with the ``:do`` phase, merging data from
     data-file < --data JSON < stdin.
     """
-    ctx = build_context(data_json=data_json, data_file=data_file, stdin_json=True)
+    ctx = build_context(data_json=data_json, data_file=data_file, stdin_json=read_stdin)
     fm, body = render_file(prompt_file, ctx, phase="do")
 
     # Run context script if declared
