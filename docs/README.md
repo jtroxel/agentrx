@@ -33,7 +33,8 @@ arx adapt pi --with-agent # or claude, copilot, codex, opencode
 # ... back and forth
 # ... if available, hooks detect compaction or refresh 
 # ... or proactively capture the context:
-> /arx:prompt-new --session "initial design feature X" # Creates a summary and a repeatable prompt based on the context of this session. Defaults to $ARX_WORKING/$ARX_MYPROJ/vibes/, see below.
+> /arx:prompt-new --session "initial design feature X" # Creates a summary and a repeatable prompt based on the context of this session. E.g.: $ARX_WORKING/260309_init-design-feat-x.md
+
 # User can edit, refine. Then:
 > /arx:prompt-run @260309_init-design-feat-x # Loads and runs previously saved prompt
 ```
@@ -41,12 +42,10 @@ arx adapt pi --with-agent # or claude, copilot, codex, opencode
 ```bash
 # Run a finished prompt
 arx prompt do $ARX_WORKING/vibes/another_prompt.md
-# ... renders the :do phase and outputs to stdout
 
 # Create a prompt from a template
 arx prompt new arch-facet --data '{"component": "auth-service"}'
 # ... resolves a template from $ARX_TEMPLATES by name
-# ... renders the :new phase, writes to $ARX_WORKING/vibes/
 
 # List recent prompts
 arx prompt list -n 10

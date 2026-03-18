@@ -6,35 +6,37 @@ arx: template
 
 # AgentRx Templates
 
-This directory contains all template files installed by `arx init`. Each `_arx_<name>.arx/` subdirectory maps **1-to-1** to an `ARX_*` environment variable (destination path).
+This directory contains all template files installed by `arx init`. Each `_arx_<name>` subdirectory maps **1-to-1** to an `ARX_*` environment variable (destination path).
 
 ## Subdirectory → Destination Mapping
 
 | Subdirectory | Destination | Behaviour |
 |---|---|---|
-| `_arx_workspace_root.arx/` | `$ARX_WORKSPACE_ROOT` | `.ARX.` marker stripped from filenames; bare files (no `.ARX.`) are not installed |
-| `_arx_agent_tools.arx/` | `$ARX_AGENT_TOOLS` | All files copied as-is (or each `agentrx/` leaf symlinked with `--link-arx`) |
-| `_arx_work_docs.arx/` | `$ARX_WORK_DOCS` | Always copied |
-| `_arx_proj_docs.arx/` | `$ARX_PROJ_DOCS` | Optional; user is prompted interactively (or `--docs`/`--no-docs`) |
+| `_arx_workspace_root/` | `$ARX_WORKSPACE_ROOT` | Contains workspace root files. Files with `.ARX.` marker are ignored; bare files are installed as-is. |
+| `_arx_agent_tools/` | `$ARX_AGENT_TOOLS` | All files copied as-is (files with `.ARX.` are ignored). |
+| `_arx_work_docs/` | `$ARX_WORK_DOCS` | Always copied (files with `.ARX.` are ignored). |
+| `_arx_proj_docs/` | `$ARX_PROJ_DOCS` | Optional; user is prompted interactively (or `--docs`/`--no-docs`). Files with `.ARX.` are ignored. |
 
 ## `.ARX.` Naming Convention
 
-Files whose names contain `.ARX.` (or `.arx.`) have the marker stripped on installation:
-- `AGENTS.ARX.md` → `AGENTS.md`
-- `CLAUDE.ARX.md` → `CLAUDE.md`
-- `.cursorrules.arx` → `.cursorrules`
+Files whose names contain `.ARX.` (or `.arx.`) are **excluded** from installation (treated as template documentation or metadata).
 
-Files **without** the marker inside `_arx_workspace_root.arx/` are treated as documentation for the templates directory itself and are **not** installed. All other subdirs copy all files without filtering.
+Files **without** the marker (bare files) are installed **as-is** to the destination.
 
-## `_arx_workspace_root.arx/`
+- `AGENTS.md` → `AGENTS.md` (installed)
+- `README.arx.md` → (ignored/not installed)
 
-Templates for the workspace root (`$ARX_WORKSPACE_ROOT`). Installed with `.ARX.` stripped:
-- `AGENTS.ARX.md` → startup instructions for coding agents
-- `AGENT_TOOLS.ARX.md` → context documents index
-- `CLAUDE.ARX.md` → Claude Code guidance
-- `.cursorrules.arx` → Cursor IDE rules (delegates to AGENTS.md)
+This allows you to keep documentation or metadata alongside your templates without polluting the generated project.
 
-## `_arx_agent_tools.arx/`
+## `_arx_workspace_root/`
+
+Templates for the workspace root (`$ARX_WORKSPACE_ROOT`). Installed as-is (ignoring `.ARX.` files):
+- `AGENTS.md` → startup instructions for coding agents
+- `AGENT_TOOLS.md` → context documents index
+- `CLAUDE.md` → Claude Code guidance
+- `.cursorrules` → Cursor IDE rules (delegates to AGENTS.md)
+
+## `_arx_agent_tools/`
 
 Agent assets installed into `$ARX_AGENT_TOOLS` (default: `_agents/`):
 - `commands/agentrx/` — slash command definitions
@@ -45,16 +47,16 @@ Agent assets installed into `$ARX_AGENT_TOOLS` (default: `_agents/`):
 
 In `--link-arx` mode each `agentrx/` leaf is symlinked back to this source tree instead of copied.
 
-## `_arx_proj_docs.arx/`
+## `_arx_proj_docs/`
 
 Optional project documentation skeleton installed into `$ARX_PROJ_DOCS` (default: `_project/docs/`). Prompted interactively unless `--docs` or `--no-docs` is passed:
-- `README.ARX.md` → `README.md` — docs index
-- `Architecture.ARX.md` → `Architecture.md`
-- `Product.ARX.md` → `Product.md`
-- `features/feature.ARX.md` → per-feature design template
+- `README.md` → `README.md` — docs index
+- `Architecture.md` → `Architecture.md`
+- `Product.md` → `Product.md`
+- `features/feature.md` → per-feature design template
 - `architecture/` — deep-dive architecture templates
 
-## `_arx_work_docs.arx/`
+## `_arx_work_docs/`
 
 Working docs scaffolding installed into `$ARX_WORK_DOCS` (default: `_project/docs/agentrx/`). Always copied. Subdirs contain `.gitkeep` files so git tracks the empty directories:
 - `deltas/` — change specs and delta documents
